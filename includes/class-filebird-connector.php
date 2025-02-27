@@ -720,110 +720,111 @@ class FileBird_Connector {
         }
     }
 
-    /**
-     * Move an attachment to a folder.
-     *
-     * @since    1.0.0
-     * @param    int       $attachment_id    The attachment ID.
-     * @param    int       $folder_id        The destination folder ID.
-     * @return   bool                        Whether the move was successful.
-     */
-    public function move_attachment_to_folder($attachment_id, $folder_id) {
-        try {
-            global $wpdb;
-            
-            if (empty($attachment_id)) {
-                return false;
-            }
-            
-            // Check FileBird is active
-            if (!$this->is_filebird_active()) {
-                return false;
-            }
-            
-            // Method 1: Try using fbv_attachment_folder table (most reliable)
-            if ($this->check_fbv_attachment_table_exists()) {
-                $fbv_attachment_table = $wpdb->prefix . 'fbv_attachment_folder';
-                
-                // Check if record exists
-                $exists = $wpdb->get_var(
-                    $wpdb->prepare(
-                        "SELECT COUNT(*) 
-                        FROM {$fbv_attachment_table} 
-                        WHERE attachment_id = %d",
-                        $attachment_id
-                    )
-                );
-                
-                if ($exists) {
-                    // Update existing record
-                    $result = $wpdb->update(
-                        $fbv_attachment_table,
-                        ['folder_id' => $folder_id],
-                        ['attachment_id' => $attachment_id],
-                        ['%d'],
-                        ['%d']
-                    );
-                } else {
-                    // Insert new record
-                    $result = $wpdb->insert(
-                        $fbv_attachment_table,
-                        [
-                            'attachment_id' => $attachment_id,
-                            'folder_id' => $folder_id
-                        ],
-                        ['%d', '%d']
-                    );
-                }
+/**
+ * Move an attachment to a folder.
+ *
+ * @since    1.0.0
+ * @param    int       $attachment_id    The attachment ID.
+ * @param    int       $folder_id        The destination folder ID.
+ * @return   bool                        Whether the move was successful.
+ */
+public function move_attachment_to_folder($attachment_id, $folder_id) {
+    try {
+        global $wpdb;
+        
+        if (empty($attachment_id) || empty($folder_id)) {
+            $this->debug("Invalid parameters: attachment_id={$attachment_id}, folder_id={$folder_id}");
+            return false;
+        }
+        
+        // Verify attachment exists
+        $attachment = get_post($attachment_id);
+        if (!$attachment || $attachment->post_type !== 'attachment') {
+            $this->debug("Attachment not found: {$attachment_id}");
+            return false;
+        }
+        
+        // Verify folder exists
+        $folder = $this->get_folder($folder_id);
+        if (!$folder) {
+            $this->debug("Folder not found: {$folder_id}");
+            return false;
+        }
+        
+        $this->debug("Moving attachment {$attachment_id} to folder {$folder_id}");
+        
+        // Get current folder for action trigger
+        $current_folder_id = $this->get_folder_for_attachment($attachment_id);
+        
+        // Track whether any method succeeded
+        $success = false;
+        
+        // Method 1: Try using FileBird's native API (most reliable)
+        if (class_exists('\\FileBird\\Model\\Folder') && method_exists('\\FileBird\\Model\\Folder', 'setFoldersForPosts')) {
+            try {
+                $this->debug("Trying FileBird API method");
+                $ids = array($attachment_id);
+                $result = \FileBird\Model\Folder::setFoldersForPosts($ids, $folder_id);
                 
                 if ($result !== false) {
-                    // Also update post meta for maximum compatibility
-                    update_post_meta($attachment_id, '_fbv', $folder_id);
-                    update_post_meta($attachment_id, '_fb_folder_id', $folder_id);
-                    
-                    // Get current folder for action trigger
-                    $current_folder_id = $this->get_folder_for_attachment($attachment_id);
-                    
-                    $this->logger->log('Moved attachment ' . $attachment_id . ' to folder ' . $folder_id . ' via DB', 'info');
-                    
-                    // Trigger action for compatibility if the current folder is different
-                    if ($current_folder_id !== $folder_id) {
-                        do_action('filebird_attachment_moved', $attachment_id, $current_folder_id, $folder_id);
-                    }
-                    
-                    return true;
+                    $this->debug("FileBird API method succeeded");
+                    $success = true;
                 }
+            } catch (\Exception $e) {
+                $this->debug("FileBird API method failed: " . $e->getMessage());
+            }
+        }
+        
+        // Method 2: Try using fbv_attachment_folder table
+        if (!$success && $this->check_fbv_attachment_table_exists()) {
+            $this->debug("Trying direct DB method (fbv_attachment_folder)");
+            $fbv_attachment_table = $wpdb->prefix . 'fbv_attachment_folder';
+            
+            // Check if record exists
+            $exists = $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT COUNT(*) 
+                    FROM {$fbv_attachment_table} 
+                    WHERE attachment_id = %d",
+                    $attachment_id
+                )
+            );
+            
+            if ($exists) {
+                // Update existing record
+                $result = $wpdb->update(
+                    $fbv_attachment_table,
+                    ['folder_id' => $folder_id],
+                    ['attachment_id' => $attachment_id],
+                    ['%d'],
+                    ['%d']
+                );
+            } else {
+                // Insert new record
+                $result = $wpdb->insert(
+                    $fbv_attachment_table,
+                    [
+                        'attachment_id' => $attachment_id,
+                        'folder_id' => $folder_id
+                    ],
+                    ['%d', '%d']
+                );
             }
             
-            // Method 2: Try using FileBird's native API
-            if (class_exists('\\FileBird\\Model\\Folder') && method_exists('\\FileBird\\Model\\Folder', 'setFoldersForPosts')) {
-                try {
-                    $ids = array($attachment_id);
-                    $result = \FileBird\Model\Folder::setFoldersForPosts($ids, $folder_id);
-                    
-                    if ($result !== false) {
-                        // Get current folder for action trigger
-                        $current_folder_id = $this->get_folder_for_attachment($attachment_id);
-                        
-                        // Trigger action for compatibility if needed
-                        if ($current_folder_id !== $folder_id) {
-                            do_action('filebird_attachment_moved', $attachment_id, $current_folder_id, $folder_id);
-                        }
-                        
-                        $this->logger->log('Moved attachment ' . $attachment_id . ' to folder ' . $folder_id . ' via API', 'info');
-                        return true;
-                    }
-                } catch (\Exception $e) {
-                    $this->logger->log('Error moving attachment via FileBird API: ' . $e->getMessage(), 'error');
-                }
+            if ($result !== false) {
+                $this->debug("Direct DB method succeeded");
+                $success = true;
+            } else {
+                $this->debug("Direct DB method failed: " . $wpdb->last_error);
             }
-            
-            // Method 3: Try taxonomy method
+        }
+        
+        // Method 3: Try taxonomy method
+        if (!$success) {
             $taxonomy_name = $this->get_filebird_taxonomy_name();
             
             if (!empty($taxonomy_name)) {
-                // Get current folder first
-                $current_folder_id = $this->get_folder_for_attachment($attachment_id);
+                $this->debug("Trying taxonomy method with taxonomy: {$taxonomy_name}");
                 
                 // Remove from current folder if it exists
                 if ($current_folder_id) {
@@ -833,46 +834,47 @@ class FileBird_Connector {
                 // Add to new folder
                 $result = wp_set_object_terms($attachment_id, $folder_id, $taxonomy_name);
                 
-                if (!is_wp_error($result)) {
-                    // Also update post meta for maximum compatibility
-                    update_post_meta($attachment_id, '_fbv', $folder_id);
-                    update_post_meta($attachment_id, '_fb_folder_id', $folder_id);
-                    
-                    $this->logger->log('Moved attachment ' . $attachment_id . ' to folder ' . $folder_id . ' via terms', 'info');
-                    
-                    // Trigger action for compatibility
-                    do_action('filebird_attachment_moved', $attachment_id, $current_folder_id, $folder_id);
-                    
-                    return true;
+                if (!is_wp_error($result) && !empty($result)) {
+                    $this->debug("Taxonomy method succeeded");
+                    $success = true;
+                } else {
+                    $error_msg = is_wp_error($result) ? $result->get_error_message() : "Unknown error";
+                    $this->debug("Taxonomy method failed: {$error_msg}");
                 }
             }
-            
-            // Method 4: Fall back to just updating the post meta
-            update_post_meta($attachment_id, '_fbv', $folder_id);
-            update_post_meta($attachment_id, '_fb_folder_id', $folder_id);
-            
-            // Check if at least the metadata was updated
-            $updated_folder_id = get_post_meta($attachment_id, '_fbv', true);
-            if ((int)$updated_folder_id === (int)$folder_id) {
-                // Get current folder for action trigger
-                $current_folder_id = $this->get_folder_for_attachment($attachment_id);
-                
-                // Trigger action for compatibility
-                if ($current_folder_id !== $folder_id) {
-                    do_action('filebird_attachment_moved', $attachment_id, $current_folder_id, $folder_id);
-                }
-                
-                $this->logger->log('Moved attachment ' . $attachment_id . ' to folder ' . $folder_id . ' via meta', 'info');
-                return true;
-            }
-            
-            return false;
-            
-        } catch (\Exception $e) {
-            $this->logger->log('Error in move_attachment_to_folder: ' . $e->getMessage(), 'error');
-            return false;
         }
+        
+        // Method 4: Always update post meta regardless of other methods
+        update_post_meta($attachment_id, '_fbv', $folder_id);
+        update_post_meta($attachment_id, '_fb_folder_id', $folder_id);
+        
+        // Check if at least the metadata was updated
+        $updated_folder_id = get_post_meta($attachment_id, '_fbv', true);
+        if ((int)$updated_folder_id === (int)$folder_id) {
+            $this->debug("Post meta method succeeded");
+            $success = true;
+        }
+        
+        // Trigger action for compatibility if there was a change
+        if ($success && $current_folder_id !== $folder_id) {
+            do_action('filebird_attachment_moved', $attachment_id, $current_folder_id, $folder_id);
+            $this->debug("Triggered filebird_attachment_moved action");
+        }
+        
+        if ($success) {
+            $this->logger->log("Successfully moved attachment {$attachment_id} to folder {$folder_id}", 'info');
+        } else {
+            $this->logger->log("Failed to move attachment {$attachment_id} to folder {$folder_id}", 'error');
+        }
+        
+        return $success;
+        
+    } catch (\Exception $e) {
+        $this->logger->log('Error in move_attachment_to_folder: ' . $e->getMessage(), 'error');
+        $this->debug("Exception: " . $e->getMessage());
+        return false;
     }
+}
 
     /**
      * Get an attachment by filename.
