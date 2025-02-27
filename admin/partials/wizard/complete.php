@@ -91,8 +91,47 @@ update_option('fbds_wizard_completed', true);
     </div>
     
     <div class="fbds-wizard-actions">
-        <a href="<?php echo admin_url('admin.php?page=filebird-dropbox-sync'); ?>" class="button button-primary button-hero">
+        <a href="<?php echo admin_url('admin.php?page=filebird-dropbox-sync&fbds_completed=1'); ?>" class="button button-primary button-hero" id="fbds-finish-wizard">
             <?php _e('Go to Dashboard', 'filebird-dropbox-sync-pro'); ?>
         </a>
     </div>
+    
+    <script type="text/javascript">
+    jQuery(document).ready(function($) {
+        // Mark wizard as completed when page loads
+        $.ajax({
+            url: fbds_data.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'fbds_wizard_step',
+                step: 'complete_wizard',
+                nonce: fbds_data.nonce
+            }
+        });
+        
+        // Add click handler for the finish button
+        $('#fbds-finish-wizard').on('click', function(e) {
+            e.preventDefault();
+            var targetUrl = $(this).attr('href');
+            
+            // Explicitly mark wizard as completed again
+            $.ajax({
+                url: fbds_data.ajax_url,
+                type: 'POST',
+                data: {
+                    action: 'fbds_wizard_step',
+                    step: 'complete_wizard',
+                    nonce: fbds_data.nonce
+                },
+                success: function() {
+                    window.location.href = targetUrl;
+                },
+                error: function() {
+                    // Go to the URL anyway even if the AJAX call fails
+                    window.location.href = targetUrl;
+                }
+            });
+        });
+    });
+    </script>
 </div>

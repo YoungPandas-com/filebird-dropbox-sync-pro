@@ -17,6 +17,11 @@
             this.bindEvents();
             this.initDropboxConnection();
             this.initFolderMapping();
+            
+            // Check if we're on the complete step and mark as completed
+            if (this.currentStep === 4) {
+                this.completeWizard();
+            }
         },
         
         /**
@@ -46,7 +51,73 @@
             // Let's get started button (Step 1)
             $('.fbds-wizard-actions .button-hero').on('click', function(e) {
                 e.preventDefault();
-                window.location.href = $(this).attr('href');
+                
+                // If this is the final step (Go to Dashboard button)
+                if (SetupWizard.currentStep === 4) {
+                    SetupWizard.completeWizard(function() {
+                        window.location.href = $(e.target).attr('href');
+                    });
+                } else {
+                    window.location.href = $(this).attr('href');
+                }
+            });
+            
+            // Skip wizard link
+            $('.fbds-skip-link a').on('click', function(e) {
+                e.preventDefault();
+                SetupWizard.skipWizard($(this).attr('href'));
+            });
+        },
+        
+        /**
+         * Complete the wizard via AJAX
+         * 
+         * @param {Function} callback Function to call after completion
+         */
+        completeWizard: function(callback) {
+            $.ajax({
+                url: fbds_data.ajax_url,
+                type: 'POST',
+                data: {
+                    action: 'fbds_wizard_step',
+                    step: 'complete_wizard',
+                    nonce: fbds_data.nonce
+                },
+                success: function(response) {
+                    if (response.success) {
+                        if (callback && typeof callback === 'function') {
+                            callback();
+                        } else if (response.data && response.data.redirect_url) {
+                            window.location.href = response.data.redirect_url;
+                        }
+                    }
+                }
+            });
+        },
+        
+        /**
+         * Skip the wizard via AJAX
+         * 
+         * @param {string} redirectUrl URL to redirect to after skipping
+         */
+        skipWizard: function(redirectUrl) {
+            $.ajax({
+                url: fbds_data.ajax_url,
+                type: 'POST',
+                data: {
+                    action: 'fbds_wizard_step',
+                    step: 'skip_wizard',
+                    nonce: fbds_data.nonce
+                },
+                success: function(response) {
+                    if (response.success) {
+                        if (redirectUrl) {
+                            window.location.href = redirectUrl;
+                        } else if (response.data && response.data.redirect_url) {
+                            window.location.href = response.data.redirect_url;
+                        }
+                    }
+                }
             });
         },
         

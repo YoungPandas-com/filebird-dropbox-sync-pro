@@ -54,7 +54,14 @@ class FileBird_Dropbox_Sync_Setup_Wizard {
      * @since    1.0.0
      */
     public function maybe_start_wizard() {
+        // If we're already on the wizard page, don't redirect
         if (isset($_GET['page']) && 'filebird-dropbox-setup' === $_GET['page']) {
+            return;
+        }
+
+        // If user explicitly wants to ignore the wizard, set it as completed
+        if (isset($_GET['fbds_ignore_wizard']) && $_GET['fbds_ignore_wizard'] == 1) {
+            update_option('fbds_wizard_completed', true);
             return;
         }
 
@@ -62,14 +69,40 @@ class FileBird_Dropbox_Sync_Setup_Wizard {
         $wizard_completed = get_option('fbds_wizard_completed', false);
         
         if (!$wizard_completed && current_user_can('manage_options')) {
+            // Don't redirect in specific contexts or URLs
+            $current_screen = get_current_screen();
+            
+            // Skip redirect for certain admin pages
+            $skip_pages = array(
+                'update.php',
+                'plugins.php', 
+                'options-general.php',
+                'options.php',
+                'admin-ajax.php',
+                'admin.php?page=filebird-dropbox-sync',
+                'customize.php'
+            );
+            
+            $current_url = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
+            foreach ($skip_pages as $page) {
+                if (strpos($current_url, $page) !== false) {
+                    return;
+                }
+            }
+            
             // Redirect to wizard
             if (!isset($_GET['fbds_ignore_wizard'])) {
                 // Check if it's an admin page but not the wizard
                 if (is_admin() && (!isset($_GET['action']) || $_GET['action'] !== 'heartbeat')) {
                     // Prevent redirect loops
                     if (!wp_doing_ajax() && !wp_doing_cron()) {
-                        wp_redirect(admin_url('admin.php?page=filebird-dropbox-setup'));
-                        exit;
+                        // Add a parameter to track redirects
+                        static $redirected = false;
+                        if (!$redirected) {
+                            $redirected = true;
+                            wp_redirect(admin_url('admin.php?page=filebird-dropbox-setup'));
+                            exit;
+                        }
                     }
                 }
             }

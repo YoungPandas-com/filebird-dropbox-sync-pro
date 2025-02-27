@@ -31,8 +31,31 @@ $has_folders = !empty($folders);
     <?php do_action('admin_print_styles'); ?>
     <?php do_action('admin_print_scripts'); ?>
     <?php do_action('admin_head'); ?>
+    <style>
+        .emergency-exit {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #dc3232;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 4px;
+            text-decoration: none;
+            font-weight: bold;
+            z-index: 9999;
+        }
+        .emergency-exit:hover {
+            background: #a00;
+            color: white;
+        }
+    </style>
 </head>
 <body class="fbds-wizard-page wp-core-ui">
+    <!-- Emergency exit button -->
+    <a href="<?php echo admin_url('index.php?fbds_ignore_wizard=1'); ?>" class="emergency-exit">
+        <?php _e('Exit Wizard', 'filebird-dropbox-sync-pro'); ?>
+    </a>
+    
     <div class="fbds-wizard-container">
         <div class="fbds-wizard-header">
             <h1><?php _e('FileBird Dropbox Sync Pro', 'filebird-dropbox-sync-pro'); ?></h1>
@@ -139,6 +162,12 @@ $has_folders = !empty($folders);
                     <a href="<?php echo admin_url('admin.php?page=filebird-dropbox-setup&step=2'); ?>" class="button button-primary button-hero">
                         <?php _e('Let\'s Get Started', 'filebird-dropbox-sync-pro'); ?>
                     </a>
+                    
+                    <p class="fbds-skip-link">
+                        <a href="<?php echo admin_url('admin.php?page=filebird-dropbox-sync&fbds_ignore_wizard=1'); ?>">
+                            <?php _e('Skip wizard and configure manually', 'filebird-dropbox-sync-pro'); ?>
+                        </a>
+                    </p>
                 </div>
             </div>
             
@@ -281,50 +310,8 @@ $has_folders = !empty($folders);
             </div>
             
             <?php elseif ($current_step === 4): ?>
-            <!-- Step 4: Complete -->
-            <div class="fbds-wizard-step-content fbds-step-complete">
-                <div class="fbds-complete-icon">
-                    <span class="dashicons dashicons-yes-alt"></span>
-                </div>
-                
-                <h2><?php _e('Setup Complete!', 'filebird-dropbox-sync-pro'); ?></h2>
-                
-                <p class="fbds-wizard-description">
-                    <?php _e('Congratulations! You have successfully set up FileBird Dropbox Sync Pro. Your FileBird folders, Dropbox, and ACF fields are now ready to sync.', 'filebird-dropbox-sync-pro'); ?>
-                </p>
-                
-                <div class="fbds-next-steps">
-                    <h3><?php _e('Next Steps', 'filebird-dropbox-sync-pro'); ?></h3>
-                    
-                    <ul class="fbds-next-steps-list">
-                        <li>
-                            <span class="fbds-step-icon dashicons dashicons-update"></span>
-                            <span class="fbds-step-text"><?php _e('Run your first sync from the dashboard', 'filebird-dropbox-sync-pro'); ?></span>
-                        </li>
-                        <li>
-                            <span class="fbds-step-icon dashicons dashicons-admin-generic"></span>
-                            <span class="fbds-step-text"><?php _e('Configure additional settings like sync frequency', 'filebird-dropbox-sync-pro'); ?></span>
-                        </li>
-                        <li>
-                            <span class="fbds-step-icon dashicons dashicons-welcome-learn-more"></span>
-                            <span class="fbds-step-text"><?php _e('Review the documentation for advanced features', 'filebird-dropbox-sync-pro'); ?></span>
-                        </li>
-                    </ul>
-                </div>
-                
-                <div class="fbds-support-info">
-                    <h3><?php _e('Need Help?', 'filebird-dropbox-sync-pro'); ?></h3>
-                    <p>
-                        <?php _e('If you encounter any issues or have questions, please visit our support center or contact our support team.', 'filebird-dropbox-sync-pro'); ?>
-                    </p>
-                </div>
-                
-                <div class="fbds-wizard-actions">
-                    <a href="<?php echo admin_url('admin.php?page=filebird-dropbox-sync'); ?>" class="button button-primary button-hero">
-                        <?php _e('Go to Dashboard', 'filebird-dropbox-sync-pro'); ?>
-                    </a>
-                </div>
-            </div>
+            <!-- Step 4: Complete - This content will be replaced by the separate complete.php template -->
+            <?php include_once FBDS_PLUGIN_DIR . 'admin/partials/wizard/complete.php'; ?>
             <?php endif; ?>
         </div>
         
