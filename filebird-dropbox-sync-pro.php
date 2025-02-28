@@ -188,6 +188,17 @@ function fbds_handle_webhook_request($request) {
     }
 }
 
+    /**
+     * Set a consistent root path through the filter. This ensures anywhere the
+     * filter is used, we get '/Website'.
+     */
+    function fbds_set_root_path($path) {
+        return '/Website';
+    }
+    add_filter('fbds_dropbox_root_path', 'fbds_set_root_path', 10, 1);
+
+
+
 /**
  * Begins execution of the plugin.
  */
