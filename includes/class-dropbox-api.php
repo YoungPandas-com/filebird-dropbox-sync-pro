@@ -165,7 +165,7 @@ class FileBird_Dropbox_API {
     }
 
     /**
-     * Make a request to the Dropbox API.
+     * Make a request to the Dropbox API with improved timeout handling.
      *
      * @since    1.0.0
      * @param    string    $endpoint      The API endpoint.
@@ -188,39 +188,77 @@ class FileBird_Dropbox_API {
         $args = [
             'method' => $method,
             'headers' => $headers,
+            'timeout' => 15,  // Increase timeout to 15 seconds
+            'sslverify' => true,
         ];
 
         if (!empty($params)) {
             $args['body'] = json_encode($params);
         }
 
-        $response = wp_remote_request($url, $args);
+        // Try up to 3 times
+        $retries = 3;
+        $response = null;
 
-        if (is_wp_error($response)) {
-            $this->logger->log('API request error: ' . $response->get_error_message(), 'error');
-            return $response;
-        }
-
-        $code = wp_remote_retrieve_response_code($response);
-        if ($code === 401) {
-            // Token expired, try to refresh
-            if ($this->refresh_access_token()) {
-                // Retry the request with the new token
-                $headers['Authorization'] = 'Bearer ' . $this->access_token;
-                $args['headers'] = $headers;
-                $response = wp_remote_request($url, $args);
-                
-                if (is_wp_error($response)) {
-                    return $response;
+        while ($retries > 0) {
+            $response = wp_remote_request($url, $args);
+            
+            if (!is_wp_error($response)) {
+                // Check for 429 (rate limit) response
+                $code = wp_remote_retrieve_response_code($response);
+                if ($code === 429) {
+                    // Rate limited, wait and retry
+                    $retry_after = wp_remote_retrieve_header($response, 'retry-after');
+                    $wait = $retry_after ? intval($retry_after) : 10;
+                    sleep($wait);
+                    $retries--;
+                    continue;
                 }
+                
+                // Check for 401 (auth expired)
+                if ($code === 401) {
+                    // Token expired, try to refresh
+                    if ($this->refresh_access_token()) {
+                        // Retry with the new token
+                        $headers['Authorization'] = 'Bearer ' . $this->access_token;
+                        $args['headers'] = $headers;
+                        $retries--;
+                        continue;
+                    } else {
+                        return new WP_Error('token_refresh_failed', 'Could not refresh access token');
+                    }
+                }
+                
+                // Success or other error that we don't retry
+                break;
             } else {
-                return new WP_Error('token_refresh_failed', 'Could not refresh access token');
+                // Check if it's a timeout error
+                $error_message = $response->get_error_message();
+                if (strpos($error_message, 'timed out') !== false || 
+                    strpos($error_message, 'timeout') !== false) {
+                    $this->logger->log('API request timed out, retrying...', 'warning');
+                    $retries--;
+                    if ($retries > 0) {
+                        // Increase timeout for each retry
+                        $args['timeout'] += 10;
+                        sleep(2);  // Wait 2 seconds before retrying
+                        continue;
+                    }
+                } else {
+                    // Other WP_Error, no need to retry
+                    break;
+                }
             }
         }
 
-        $body = json_decode(wp_remote_retrieve_body($response), true);
-        return $body;
+    if (is_wp_error($response)) {
+        $this->logger->log('API request error: ' . $response->get_error_message(), 'error');
+        return $response;
     }
+
+    $body = json_decode(wp_remote_retrieve_body($response), true);
+    return $body;
+}
 
     /**
      * Upload a file to Dropbox.
@@ -390,7 +428,7 @@ class FileBird_Dropbox_API {
     }
 
     /**
-     * Download a file from Dropbox.
+     * Download a file from Dropbox with improved timeout handling.
      *
      * @since    1.0.0
      * @param    string    $dropbox_path  The Dropbox path.
@@ -405,21 +443,50 @@ class FileBird_Dropbox_API {
             ]),
         ];
         
-        $response = wp_remote_get('https://content.dropboxapi.com/2/files/download', [
+        $args = [
             'method' => 'POST',
             'headers' => $headers,
             'stream' => true,
             'filename' => $local_path,
-        ]);
+            'timeout' => 30,  // Increase timeout to 30 seconds for downloads
+        ];
         
-        if (is_wp_error($response)) {
-            $this->logger->log('Error downloading file: ' . $response->get_error_message(), 'error');
+        // Try up to 3 times
+        $retries = 3;
+        $success = false;
+        
+        while (!$success && $retries > 0) {
+            $response = wp_remote_get('https://content.dropboxapi.com/2/files/download', $args);
+            
+            if (!is_wp_error($response)) {
+                $success = true;
+            } else {
+                $error_message = $response->get_error_message();
+                $this->logger->log('Error downloading file (attempt ' . (4 - $retries) . '): ' . $error_message, 'warning');
+                
+                // Check if it's a timeout error
+                if (strpos($error_message, 'timed out') !== false || 
+                    strpos($error_message, 'timeout') !== false) {
+                    $retries--;
+                    if ($retries > 0) {
+                        $args['timeout'] += 15;  // Increase timeout for each retry
+                        sleep(2);  // Wait 2 seconds before retrying
+                    }
+                } else {
+                    // Other WP_Error, no need to retry
+                    $retries = 0;
+                }
+            }
+        }
+        
+        if (!$success) {
+            $this->logger->log('Error downloading file: ' . $dropbox_path, 'error');
             return false;
         }
         
         return true;
     }
-
+    
     /**
      * Create a folder in Dropbox.
      *

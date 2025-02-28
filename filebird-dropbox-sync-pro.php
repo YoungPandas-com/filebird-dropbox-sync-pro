@@ -102,6 +102,94 @@ register_deactivation_hook(__FILE__, 'deactivate_filebird_dropbox_sync');
 require FBDS_PLUGIN_DIR . 'includes/class-filebird-dropbox-sync.php';
 
 /**
+ * Add this code to the main plugin file: filebird-dropbox-sync-pro.php
+ * Just before the line: run_filebird_dropbox_sync();
+ */
+
+// Register the REST API routes for Dropbox webhooks
+add_action('rest_api_init', 'fbds_register_webhook_routes');
+
+/**
+ * Register multiple webhook routes to ensure compatibility
+ */
+function fbds_register_webhook_routes() {
+    // Register the route with the plugin's namespace
+    register_rest_route('filebird-dropbox-sync/v1', '/webhook', array(
+        'methods' => 'GET,POST',
+        'callback' => 'fbds_handle_webhook_request',
+        'permission_callback' => '__return_true',
+    ));
+    
+    // Register the route with the 'dropbox' namespace for backward compatibility
+    register_rest_route('dropbox/v1', '/webhook', array(
+        'methods' => 'GET,POST',
+        'callback' => 'fbds_handle_webhook_request',
+        'permission_callback' => '__return_true',
+    ));
+    
+    // Register a route without namespace (simpler URL)
+    register_rest_route('', '/dropbox-webhook', array(
+        'methods' => 'GET,POST',
+        'callback' => 'fbds_handle_webhook_request',
+        'permission_callback' => '__return_true',
+    ));
+}
+
+/**
+ * Handle webhook requests from Dropbox
+ */
+function fbds_handle_webhook_request($request) {
+    try {
+        $method = $request->get_method();
+        
+        // Check if this is a verification request
+        if ($method === 'GET') {
+            // Get challenge parameter and respond
+            $challenge = $request->get_param('challenge');
+            
+            if ($challenge) {
+                // This is what Dropbox expects - return the challenge string
+                $response = new WP_REST_Response($challenge);
+                $response->set_status(200);
+                $response->header('Content-Type', 'text/plain');
+                return $response;
+            }
+            
+            return new WP_REST_Response('Invalid challenge', 400);
+        } 
+        else if ($method === 'POST') {
+            // This is a real webhook notification
+            
+            // Check if Dropbox class is available, otherwise include it
+            if (!class_exists('FileBird_Dropbox_API')) {
+                require_once FBDS_PLUGIN_DIR . 'includes/class-dropbox-api.php';
+            }
+            
+            // Check if logger class is available, otherwise include it
+            if (!class_exists('FileBird_Dropbox_Sync_Logger')) {
+                require_once FBDS_PLUGIN_DIR . 'includes/class-logger.php';
+            }
+            
+            // Log the notification
+            $logger = new FileBird_Dropbox_Sync_Logger();
+            $logger->log('Received webhook notification from Dropbox via direct handler', 'info');
+            
+            // Schedule a sync to process the changes (in 1 and 5 minutes)
+            wp_schedule_single_event(time() + 60, 'fbds_scheduled_sync', array('from_dropbox'));
+            wp_schedule_single_event(time() + 300, 'fbds_scheduled_sync', array('from_dropbox'));
+            
+            return new WP_REST_Response(array('status' => 'success'), 200);
+        }
+        
+        return new WP_REST_Response('Invalid method', 405);
+    } 
+    catch (Exception $e) {
+        // Even if there's an error, return 200 to prevent Dropbox from disabling the webhook
+        return new WP_REST_Response(array('status' => 'error handled'), 200);
+    }
+}
+
+/**
  * Begins execution of the plugin.
  */
 function run_filebird_dropbox_sync() {

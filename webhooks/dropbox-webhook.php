@@ -44,7 +44,15 @@ class FileBird_Dropbox_Webhook_Handler {
      * Register the webhook endpoint.
      */
     public function register_webhook_endpoint() {
+        // Register the standard plugin route
         register_rest_route('filebird-dropbox-sync/v1', '/webhook', array(
+            'methods' => WP_REST_Server::ALLMETHODS, // Handle GET and POST
+            'callback' => array($this, 'handle_webhook_request'),
+            'permission_callback' => '__return_true', // No authentication required for Dropbox webhook
+        ));
+        
+        // Also register the route that's currently configured in Dropbox for backward compatibility
+        register_rest_route('dropbox/v1', '/webhook', array(
             'methods' => WP_REST_Server::ALLMETHODS, // Handle GET and POST
             'callback' => array($this, 'handle_webhook_request'),
             'permission_callback' => '__return_true', // No authentication required for Dropbox webhook
@@ -52,55 +60,68 @@ class FileBird_Dropbox_Webhook_Handler {
     }
 
     /**
-     * Handle webhook request from Dropbox.
+     * Handle webhook request from Dropbox with better error handling.
      *
      * @param WP_REST_Request $request The request object.
      * @return WP_REST_Response The response object.
      */
     public function handle_webhook_request($request) {
-        // Get request method
-        $method = $request->get_method();
-        
-        if ($method === 'GET') {
-            // This is a verification request from Dropbox
-            return $this->handle_verification_request($request);
-        } else if ($method === 'POST') {
-            // This is a notification about changes
-            return $this->handle_notification_request($request);
+        try {
+            // Get request method
+            $method = $request->get_method();
+            
+            if ($method === 'GET') {
+                // This is a verification request from Dropbox
+                return $this->handle_verification_request($request);
+            } else if ($method === 'POST') {
+                // This is a notification about changes
+                return $this->handle_notification_request($request);
+            }
+            
+            // Invalid request method
+            return new WP_REST_Response(
+                array('error' => 'Invalid request method'),
+                405
+            );
+        } catch (Exception $e) {
+            // Log the error but return a success response to prevent Dropbox from disabling the webhook
+            $this->logger->log('Error in webhook handler: ' . $e->getMessage(), 'error');
+            return new WP_REST_Response(
+                array('status' => 'success', 'message' => 'Error handled gracefully'),
+                200
+            );
         }
-        
-        // Invalid request method
-        return new WP_REST_Response(
-            array('error' => 'Invalid request method'),
-            405
-        );
     }
 
     /**
-     * Handle verification request from Dropbox.
+     * Handle verification request from Dropbox with better error handling.
      *
      * @param WP_REST_Request $request The request object.
      * @return WP_REST_Response The response object.
      */
     private function handle_verification_request($request) {
-        // Get challenge parameter
-        $challenge = $request->get_param('challenge');
-        
-        if (!$challenge) {
-            return new WP_REST_Response(
-                array('error' => 'Missing challenge parameter'),
-                400
-            );
+        try {
+            // Get challenge parameter
+            $challenge = $request->get_param('challenge');
+            
+            if (!$challenge) {
+                $this->logger->log('Missing challenge parameter in Dropbox verification', 'warning');
+                // Return a 200 response anyway to prevent Dropbox from disabling the webhook
+                return new WP_REST_Response('', 200);
+            }
+            
+            $this->logger->log('Received verification challenge from Dropbox: ' . $challenge, 'info');
+            
+            // Return the challenge as a plain text response
+            $response = new WP_REST_Response($challenge);
+            $response->header('Content-Type', 'text/plain');
+            
+            return $response;
+        } catch (Exception $e) {
+            $this->logger->log('Error in verification handler: ' . $e->getMessage(), 'error');
+            // Return an empty 200 response to prevent Dropbox from disabling the webhook
+            return new WP_REST_Response('', 200);
         }
-        
-        $this->logger->log('Received verification challenge from Dropbox: ' . $challenge, 'info');
-        
-        // Return the challenge as a plain text response
-        // This is what Dropbox expects for webhook verification
-        $response = new WP_REST_Response($challenge);
-        $response->header('Content-Type', 'text/plain');
-        
-        return $response;
     }
 
     /**
@@ -132,12 +153,20 @@ class FileBird_Dropbox_Webhook_Handler {
             $this->logger->log('Dropbox accounts with changes: ' . $accounts, 'info');
         }
         
-        // Schedule a sync to process the changes
-        // Wait a minute to allow Dropbox to process changes
-        $sync_time = time() + 60;
-        wp_schedule_single_event($sync_time, 'fbds_scheduled_sync', array('from_dropbox'));
+        // Schedule multiple sync events with different timing to ensure changes are captured
+        // First sync after 1 minute
+        $sync_time_1 = time() + 60;
+        wp_schedule_single_event($sync_time_1, 'fbds_scheduled_sync', array('from_dropbox'));
         
-        $this->logger->log('Scheduled sync in response to Dropbox webhook', 'info');
+        // Second sync after 5 minutes in case the first one misses anything
+        $sync_time_2 = time() + 300;
+        wp_schedule_single_event($sync_time_2, 'fbds_scheduled_sync', array('from_dropbox'));
+        
+        // Third sync that's bidirectional after 10 minutes to ensure everything is synced
+        $sync_time_3 = time() + 600;
+        wp_schedule_single_event($sync_time_3, 'fbds_scheduled_sync', array('both'));
+        
+        $this->logger->log('Scheduled multiple syncs in response to Dropbox webhook', 'info');
         
         // Return success response
         return new WP_REST_Response(

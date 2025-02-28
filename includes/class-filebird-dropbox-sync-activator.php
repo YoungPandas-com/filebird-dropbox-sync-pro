@@ -134,7 +134,16 @@ class FileBird_Dropbox_Sync_Activator {
         // Schedule sync if auto sync is enabled
         if ($settings && isset($settings['auto_sync']) && $settings['auto_sync']) {
             $frequency = isset($settings['sync_frequency']) ? $settings['sync_frequency'] : 'hourly';
+            
+            // Schedule general bidirectional sync
             wp_schedule_event(time(), $frequency, 'fbds_scheduled_sync');
+            
+            // Schedule additional dedicated syncs for the Dropbox to FileBird direction
+            // This ensures changes in Dropbox are regularly pulled even without webhook triggers
+            wp_schedule_event(time() + 300, $frequency, 'fbds_scheduled_sync', array('from_dropbox'));
+            
+            // Also schedule a daily full bidirectional sync
+            wp_schedule_event(time() + 3600, 'daily', 'fbds_scheduled_sync', array('both'));
         }
     }
 

@@ -54,6 +54,15 @@ class Sync_Engine {
     private $is_syncing = false;
 
     /**
+     * Root path for Dropbox.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @var      string    $root_path    The root path in Dropbox.
+     */
+    private $root_path = '/Website';
+
+    /**
      * Initialize the class and set its properties.
      *
      * @since    1.0.0
@@ -66,6 +75,9 @@ class Sync_Engine {
         $this->filebird_connector = $filebird_connector;
         $this->acf_connector = $acf_connector;
         $this->logger = new FileBird_Dropbox_Sync_Logger();
+        
+        // Apply filter to root path
+        $this->root_path = apply_filters('fbds_dropbox_root_path', $this->root_path);
     }
 
     /**
@@ -94,106 +106,118 @@ class Sync_Engine {
         wp_send_json_success(['message' => __('Synchronization has been scheduled.', 'filebird-dropbox-sync-pro')]);
     }
 
-    /**
-     * Schedule a synchronization.
-     *
-     * @since    1.0.0
-     * @param    string    $direction    The sync direction (both, to_dropbox, from_dropbox).
-     */
-    public function schedule_sync($direction = 'both') {
-        $sync_time = time() + 5; // Start in 5 seconds
-        
-        update_option('fbds_last_sync_status', 'scheduled');
-        update_option('fbds_last_sync_direction', $direction);
-        
-        wp_schedule_single_event($sync_time, 'fbds_scheduled_sync', [$direction]);
-        
-        $this->logger->log('Sync scheduled with direction: ' . $direction, 'info');
-    }
+/**
+ * Schedule a synchronization.
+ *
+ * @since    1.0.0
+ * @param    string    $direction    The sync direction (both, to_dropbox, from_dropbox).
+ */
+public function schedule_sync($direction = 'both') {
+    $sync_time = time() + 5; // Start in 5 seconds
+    
+    update_option('fbds_last_sync_status', 'scheduled');
+    update_option('fbds_last_sync_direction', $direction);
+    
+    // Clear any existing scheduled syncs for this direction to prevent duplicates
+    wp_clear_scheduled_hook('fbds_scheduled_sync', [$direction]);
+    
+    // Schedule the sync
+    wp_schedule_single_event($sync_time, 'fbds_scheduled_sync', [$direction]);
+    
+    $this->logger->log('Sync scheduled with direction: ' . $direction, 'info');
+}
 
-    /**
-     * Run a scheduled synchronization.
-     *
-     * @since    1.0.0
-     * @param    string    $direction    The sync direction (both, to_dropbox, from_dropbox).
-     */
-    public function run_scheduled_sync($direction = 'both') {
-        if ($this->is_syncing) {
-            $this->logger->log('Sync already in progress. Aborting.', 'warning');
-            return;
-        }
+/**
+ * Run a scheduled synchronization.
+ *
+ * @since    1.0.0
+ * @param    string    $direction    The sync direction (both, to_dropbox, from_dropbox).
+ */
+public function run_scheduled_sync($direction = 'both') {
+    // Check if another sync is in progress
+    if ($this->is_syncing) {
+        $this->logger->log('Sync already in progress. Adding to queue.', 'warning');
         
-        $this->is_syncing = true;
-        update_option('fbds_last_sync_status', 'in_progress');
-        update_option('fbds_sync_start_time', time());
+        // Schedule this sync for later
+        $queued_time = time() + 120; // Try again in 2 minutes
+        wp_schedule_single_event($queued_time, 'fbds_scheduled_sync', [$direction]);
         
-        $this->logger->log('Starting sync with direction: ' . $direction, 'info');
-        
-        // Track individual sync successes
-        $filebird_to_dropbox_success = true;
-        $dropbox_to_filebird_success = true;
-        $filebird_to_acf_success = true;
-        $error_messages = array();
-        
-        // Check Dropbox connection
-        if (!$this->dropbox_api->is_connected()) {
-            update_option('fbds_last_sync_status', 'failed');
-            update_option('fbds_last_sync_error', 'Dropbox is not connected.');
-            $this->logger->log('Sync failed: Dropbox is not connected.', 'error');
-            $this->is_syncing = false;
-            return;
-        }
-        
-        // Run each sync direction independently to avoid total failure
-        if ($direction === 'both' || $direction === 'to_dropbox') {
-            try {
-                $this->sync_filebird_to_dropbox();
-            } catch (Exception $e) {
-                $filebird_to_dropbox_success = false;
-                $error_messages[] = 'FileBird to Dropbox: ' . $e->getMessage();
-                $this->logger->log('FileBird to Dropbox sync failed: ' . $e->getMessage(), 'error');
-            }
-        }
-        
-        if ($direction === 'both' || $direction === 'from_dropbox') {
-            try {
-                $this->sync_dropbox_to_filebird();
-            } catch (Exception $e) {
-                $dropbox_to_filebird_success = false;
-                $error_messages[] = 'Dropbox to FileBird: ' . $e->getMessage();
-                $this->logger->log('Dropbox to FileBird sync failed: ' . $e->getMessage(), 'error');
-            }
-        }
-        
-        // Always try to sync FileBird to ACF
-        try {
-            $this->sync_filebird_to_acf();
-        } catch (Exception $e) {
-            $filebird_to_acf_success = false;
-            $error_messages[] = 'FileBird to ACF: ' . $e->getMessage();
-            $this->logger->log('FileBird to ACF sync failed: ' . $e->getMessage(), 'error');
-        }
-        
-        // Determine overall sync status
-        if ($filebird_to_dropbox_success && $dropbox_to_filebird_success && $filebird_to_acf_success) {
-            update_option('fbds_last_sync_status', 'completed');
-            update_option('fbds_last_sync_time', time());
-            $this->logger->log('Sync completed successfully', 'info');
-        } else if (!$filebird_to_dropbox_success && !$dropbox_to_filebird_success && !$filebird_to_acf_success) {
-            // Complete failure
-            update_option('fbds_last_sync_status', 'failed');
-            update_option('fbds_last_sync_error', implode(' | ', $error_messages));
-            $this->logger->log('Sync failed completely', 'error');
-        } else {
-            // Partial success
-            update_option('fbds_last_sync_status', 'partial');
-            update_option('fbds_last_sync_error', implode(' | ', $error_messages));
-            update_option('fbds_last_sync_time', time());
-            $this->logger->log('Sync partially completed with errors', 'warning');
-        }
-        
-        $this->is_syncing = false;
+        return;
     }
+    
+    // Set the sync flag
+    $this->is_syncing = true;
+    update_option('fbds_last_sync_status', 'in_progress');
+    update_option('fbds_sync_start_time', time());
+    
+    $this->logger->log('Starting sync with direction: ' . $direction, 'info');
+    
+    // Track individual sync successes
+    $filebird_to_dropbox_success = true;
+    $dropbox_to_filebird_success = true;
+    $filebird_to_acf_success = true;
+    $error_messages = array();
+    
+    // Check Dropbox connection
+    if (!$this->dropbox_api->is_connected()) {
+        update_option('fbds_last_sync_status', 'failed');
+        update_option('fbds_last_sync_error', 'Dropbox is not connected.');
+        $this->logger->log('Sync failed: Dropbox is not connected.', 'error');
+        $this->is_syncing = false;
+        return;
+    }
+    
+    // Run each sync direction independently to avoid total failure
+    if ($direction === 'both' || $direction === 'to_dropbox') {
+        try {
+            $this->sync_filebird_to_dropbox();
+        } catch (Exception $e) {
+            $filebird_to_dropbox_success = false;
+            $error_messages[] = 'FileBird to Dropbox: ' . $e->getMessage();
+            $this->logger->log('FileBird to Dropbox sync failed: ' . $e->getMessage(), 'error');
+        }
+    }
+    
+    if ($direction === 'both' || $direction === 'from_dropbox') {
+        try {
+            $this->sync_dropbox_to_filebird();
+        } catch (Exception $e) {
+            $dropbox_to_filebird_success = false;
+            $error_messages[] = 'Dropbox to FileBird: ' . $e->getMessage();
+            $this->logger->log('Dropbox to FileBird sync failed: ' . $e->getMessage(), 'error');
+        }
+    }
+    
+    // Always try to sync FileBird to ACF
+    try {
+        $this->sync_filebird_to_acf();
+    } catch (Exception $e) {
+        $filebird_to_acf_success = false;
+        $error_messages[] = 'FileBird to ACF: ' . $e->getMessage();
+        $this->logger->log('FileBird to ACF sync failed: ' . $e->getMessage(), 'error');
+    }
+    
+    // Determine overall sync status
+    if ($filebird_to_dropbox_success && $dropbox_to_filebird_success && $filebird_to_acf_success) {
+        update_option('fbds_last_sync_status', 'completed');
+        update_option('fbds_last_sync_time', time());
+        $this->logger->log('Sync completed successfully', 'info');
+    } else if (!$filebird_to_dropbox_success && !$dropbox_to_filebird_success && !$filebird_to_acf_success) {
+        // Complete failure
+        update_option('fbds_last_sync_status', 'failed');
+        update_option('fbds_last_sync_error', implode(' | ', $error_messages));
+        $this->logger->log('Sync failed completely', 'error');
+    } else {
+        // Partial success
+        update_option('fbds_last_sync_status', 'partial');
+        update_option('fbds_last_sync_error', implode(' | ', $error_messages));
+        update_option('fbds_last_sync_time', time());
+        $this->logger->log('Sync partially completed with errors', 'warning');
+    }
+    
+    // Release the sync flag
+    $this->is_syncing = false;
+}
 
     /**
      * Synchronize FileBird folders and media to Dropbox.
@@ -206,6 +230,19 @@ class Sync_Engine {
         
         // Get all FileBird folders
         $folders = $this->filebird_connector->get_all_folders();
+        
+        // Make sure root folder exists first
+        $root_metadata = $this->dropbox_api->get_metadata($this->root_path);
+        if (is_wp_error($root_metadata) || isset($root_metadata['error_summary'])) {
+            // Root doesn't exist, create it
+            $this->logger->log('Creating root Dropbox folder: ' . $this->root_path, 'info');
+            $result = $this->dropbox_api->create_folder($this->root_path);
+            
+            if (is_wp_error($result) || isset($result['error_summary'])) {
+                $error_message = is_wp_error($result) ? $result->get_error_message() : $result['error_summary'];
+                throw new Exception('Error creating root Dropbox folder: ' . $error_message);
+            }
+        }
         
         // Create folder structure in Dropbox
         foreach ($folders as $folder) {
@@ -252,8 +289,12 @@ class Sync_Engine {
                     // File exists in Dropbox, check if WordPress version is newer
                     $dropbox_modified = strtotime($metadata['server_modified']);
                     
-                    if ($attachment_modified <= $dropbox_modified) {
-                        // Dropbox version is newer or same age, skip upload
+                    // Get conflict resolution setting
+                    $settings = get_option('fbds_settings', []);
+                    $conflict_resolution = isset($settings['conflict_resolution']) ? $settings['conflict_resolution'] : 'newer';
+                    
+                    if ($conflict_resolution === 'filebird' || ($conflict_resolution === 'newer' && $attachment_modified <= $dropbox_modified)) {
+                        // Skip upload based on conflict resolution setting
                         continue;
                     }
                 }
@@ -283,17 +324,13 @@ class Sync_Engine {
     private function sync_dropbox_to_filebird() {
         $this->logger->log('Starting Dropbox to FileBird sync', 'info');
         
-        // Get the root Dropbox folder path
-        $root_path = '/FileBird'; // Default root path
-        $root_path = apply_filters('fbds_dropbox_root_path', $root_path);
-        
         try {
             // Check if Dropbox root folder exists, create if not
-            $metadata = $this->dropbox_api->get_metadata($root_path);
+            $metadata = $this->dropbox_api->get_metadata($this->root_path);
             if (is_wp_error($metadata) || isset($metadata['error_summary'])) {
                 // Try to create the root folder
-                $this->logger->log('Creating root Dropbox folder: ' . $root_path, 'info');
-                $result = $this->dropbox_api->create_folder($root_path);
+                $this->logger->log('Creating root Dropbox folder: ' . $this->root_path, 'info');
+                $result = $this->dropbox_api->create_folder($this->root_path);
                 
                 if (is_wp_error($result) || isset($result['error_summary'])) {
                     $error_message = is_wp_error($result) ? $result->get_error_message() : $result['error_summary'];
@@ -301,13 +338,15 @@ class Sync_Engine {
                 }
             }
             
-            // List contents of root folder
-            $contents = $this->dropbox_api->list_folder($root_path);
+            // Now list the contents of the root folder
+            $contents = $this->dropbox_api->list_folder($this->root_path);
             
             if (is_wp_error($contents) || isset($contents['error_summary'])) {
                 $error_message = is_wp_error($contents) ? $contents->get_error_message() : $contents['error_summary'];
                 throw new Exception('Error listing root Dropbox folder: ' . $error_message);
             }
+            
+            $this->logger->log('Successfully listed contents of Dropbox root folder: ' . $this->root_path, 'info');
             
             // Process folders in the root - these will map to top-level FileBird folders
             $folders = array_filter($contents['entries'], function($entry) {
@@ -358,7 +397,7 @@ class Sync_Engine {
             
             if (!empty($files)) {
                 // For files directly in the root, we'll need to create or use a special "Dropbox Root" folder
-                $root_folder_name = 'Dropbox Root';
+                $root_folder_name = 'Website Root';
                 $root_folder_id = $this->filebird_connector->get_folder_by_name($root_folder_name, 0);
                 
                 if (!$root_folder_id) {
@@ -381,78 +420,103 @@ class Sync_Engine {
         $this->logger->log('Completed Dropbox to FileBird sync', 'info');
     }
 
-    /**
-     * Process a Dropbox folder and sync it to FileBird.
-     *
-     * @since    1.0.0
-     * @param    string    $dropbox_path   The Dropbox folder path.
-     * @param    int       $parent_id      The parent folder ID in FileBird.
-     * @throws   Exception                 If an error occurs during sync.
-     */
-    private function process_dropbox_folder($dropbox_path, $parent_id) {
-        // List folder contents
+/**
+ * Process a Dropbox folder and sync it to FileBird.
+ *
+ * @since    1.0.0
+ * @param    string    $dropbox_path   The Dropbox folder path.
+ * @param    int       $parent_id      The parent folder ID in FileBird.
+ * @throws   Exception                 If an error occurs during sync.
+ */
+private function process_dropbox_folder($dropbox_path, $parent_id) {
+    // List folder contents with retries
+    $contents = false;
+    $retries = 3;
+    
+    while (!$contents && $retries > 0) {
         $contents = $this->dropbox_api->list_folder($dropbox_path);
-        
         if (is_wp_error($contents) || isset($contents['error_summary'])) {
-            $error_message = is_wp_error($contents) ? $contents->get_error_message() : $contents['error_summary'];
-            $this->logger->log('Error listing Dropbox folder: ' . $error_message, 'error');
-            return;
+            $retries--;
+            if ($retries > 0) {
+                // Wait before retry
+                sleep(1);
+            }
         }
+    }
+    
+    if (is_wp_error($contents) || isset($contents['error_summary'])) {
+        $error_message = is_wp_error($contents) ? $contents->get_error_message() : $contents['error_summary'];
+        $this->logger->log('Error listing Dropbox folder: ' . $error_message, 'error');
+        return;
+    }
+    
+    // Get or create FileBird folder
+    $folder_name = basename($dropbox_path);
+    $filebird_folder_id = $parent_id; // Default to parent_id for root folder
+    
+    if ($dropbox_path !== '/FileBird') {
+        // Not the root folder, create or get FileBird folder
+        $this->logger->log('Processing Dropbox folder: ' . $dropbox_path . ' with parent: ' . $parent_id, 'info');
         
-        // Get or create FileBird folder
-        $folder_name = basename($dropbox_path);
-        $filebird_folder_id = $parent_id; // Default to parent_id for root folder
-        
-        if ($dropbox_path !== '/FileBird') {
-            // Not the root folder, create or get FileBird folder
-            $this->logger->log('Processing Dropbox folder: ' . $dropbox_path . ' with parent: ' . $parent_id, 'info');
-            
+        // Try multiple times to get or create the folder
+        $retries = 3;
+        while ($retries > 0) {
             $filebird_folder_id = $this->filebird_connector->get_folder_by_name($folder_name, $parent_id);
             
             if (!$filebird_folder_id) {
                 $filebird_folder_id = $this->filebird_connector->create_folder($folder_name, $parent_id);
-                $this->logger->log('Created FileBird folder: ' . $folder_name . ' (ID: ' . $filebird_folder_id . ') with parent: ' . $parent_id, 'info');
+                if ($filebird_folder_id) {
+                    $this->logger->log('Created FileBird folder: ' . $folder_name . ' (ID: ' . $filebird_folder_id . ') with parent: ' . $parent_id, 'info');
+                    break;
+                }
+                $retries--;
+                if ($retries > 0) {
+                    // Wait before retry
+                    usleep(500000); // 0.5 seconds
+                }
             } else {
                 $this->logger->log('Found existing FileBird folder: ' . $folder_name . ' (ID: ' . $filebird_folder_id . ')', 'info');
-            }
-            
-            // Verify folder was created/found
-            if (!$filebird_folder_id) {
-                $this->logger->log('Failed to create or find FileBird folder for: ' . $dropbox_path, 'error');
-                return;
+                break;
             }
         }
         
-        // Process files in this folder with batch processing
-        $files = array_filter($contents['entries'], function($entry) {
-            return $entry['.tag'] === 'file';
-        });
-        
-        // Process in batches of 10 files
-        $batch_size = 10;
-        $file_batches = array_chunk($files, $batch_size);
-        
-        foreach ($file_batches as $batch) {
-            foreach ($batch as $entry) {
-                $this->logger->log('Processing file: ' . $entry['path_display'] . ' for folder ID: ' . $filebird_folder_id, 'info');
-                $this->process_dropbox_file($entry, $filebird_folder_id);
-            }
-            
-            // Give the server a small breather between batches
-            if (count($file_batches) > 1) {
-                usleep(100000); // 0.1 second pause between batches
-            }
-        }
-        
-        // Process subfolders
-        $folders = array_filter($contents['entries'], function($entry) {
-            return $entry['.tag'] === 'folder';
-        });
-        
-        foreach ($folders as $entry) {
-            $this->process_dropbox_folder($entry['path_display'], $filebird_folder_id);
+        // Verify folder was created/found
+        if (!$filebird_folder_id) {
+            $this->logger->log('Failed to create or find FileBird folder for: ' . $dropbox_path, 'error');
+            return;
         }
     }
+    
+    // Process files in this folder with batch processing
+    $files = array_filter($contents['entries'], function($entry) {
+        return $entry['.tag'] === 'file';
+    });
+    
+    // Process in batches of 5 files (smaller batch size to reduce timeout issues)
+    $batch_size = 5;
+    $file_batches = array_chunk($files, $batch_size);
+    
+    foreach ($file_batches as $batch) {
+        foreach ($batch as $entry) {
+            $this->logger->log('Processing file: ' . $entry['path_display'] . ' for folder ID: ' . $filebird_folder_id, 'info');
+            $this->process_dropbox_file($entry, $filebird_folder_id);
+        }
+        
+        // Give the server a longer breather between batches
+        if (count($file_batches) > 1) {
+            sleep(1); // 1 second pause between batches to prevent timeouts
+        }
+    }
+    
+    // Process subfolders
+    $folders = array_filter($contents['entries'], function($entry) {
+        return $entry['.tag'] === 'folder';
+    });
+    
+    foreach ($folders as $entry) {
+        $this->process_dropbox_folder($entry['path_display'], $filebird_folder_id);
+    }
+}
 
     /**
      * Process a Dropbox file and sync it to FileBird.
@@ -500,6 +564,7 @@ class Sync_Engine {
         
         // Check if file already exists in WordPress
         $attachment_id = $this->filebird_connector->get_attachment_by_filename($filename);
+        $this->logger->log("Checking if file exists in WordPress: " . ($attachment_id ? "Yes (ID: {$attachment_id})" : "No"), 'info');
         
         if ($attachment_id) {
             // File exists, check conflict resolution setting
@@ -508,6 +573,7 @@ class Sync_Engine {
             
             if ($conflict_resolution === 'filebird') {
                 // WordPress version always wins, skip download
+                $this->logger->log("Conflict resolution is 'filebird', keeping WordPress version", 'info');
                 
                 // Make sure the attachment is in the correct folder
                 $current_folder_id = $this->filebird_connector->get_folder_for_attachment($attachment_id);
@@ -524,6 +590,7 @@ class Sync_Engine {
                 return;
             } else if ($conflict_resolution === 'newer' && $attachment_modified >= $dropbox_modified) {
                 // WordPress version is newer or same age, skip download
+                $this->logger->log("WordPress version is newer or same age, skipping download", 'info');
                 
                 // Make sure the attachment is in the correct folder
                 $current_folder_id = $this->filebird_connector->get_folder_for_attachment($attachment_id);
@@ -547,6 +614,9 @@ class Sync_Engine {
                 }
                 $filename = $new_filename;
                 $attachment_id = null; // Force creating as new file
+                $this->logger->log("Conflict resolution is 'both', creating new file with name: {$filename}", 'info');
+            } else {
+                $this->logger->log("Conflict resolution is '{$conflict_resolution}', proceeding with download", 'info');
             }
             // For 'dropbox' resolution or 'newer' with dropbox being newer, continue with download
         }
@@ -555,6 +625,7 @@ class Sync_Engine {
         $upload_dir = wp_upload_dir();
         $temp_file = $upload_dir['basedir'] . '/fbds-temp-' . md5($filename . time());
         
+        $this->logger->log("Downloading file from Dropbox: {$dropbox_path}", 'info');
         $downloaded = $this->dropbox_api->download_file($dropbox_path, $temp_file);
         
         if (!$downloaded) {
@@ -610,6 +681,8 @@ class Sync_Engine {
             $attach_data = wp_generate_attachment_metadata($attachment_id, $new_file);
             wp_update_attachment_metadata($attachment_id, $attach_data);
             
+            $this->logger->log("Updated existing attachment ID: {$attachment_id}", 'info');
+            
         } else {
             // Create new attachment
             require_once(ABSPATH . 'wp-admin/includes/file.php');
@@ -617,6 +690,8 @@ class Sync_Engine {
             require_once(ABSPATH . 'wp-admin/includes/image.php');
             
             $attachment_id = media_handle_sideload($file_array, 0);
+            
+            $this->logger->log("Created new attachment via sideload: " . (is_wp_error($attachment_id) ? $attachment_id->get_error_message() : "Success, ID: {$attachment_id}"), 'info');
         }
         
         if (is_wp_error($attachment_id)) {
@@ -716,116 +791,146 @@ class Sync_Engine {
         return $this->get_dropbox_path_for_filebird_folder($folder->term_id);
     }
 
-    /**
-     * Get FileID folder ID for a Dropbox path
-     * This helps ensure consistent mapping between Dropbox and FileBird
-     *
-     * @since    1.0.0
-     * @param    string    $dropbox_path    The Dropbox folder path.
-     * @param    bool      $create          Whether to create folders if they don't exist.
-     * @return   int|false                  The FileBird folder ID or false if not found.
-     */
-    private function get_filebird_folder_for_dropbox_path($dropbox_path, $create = true) {
-        // Normalize root path to FileBird
-        $root_path = '/FileBird';
-        $root_path = apply_filters('fbds_dropbox_root_path', $root_path);
+/**
+ * Get FileID folder ID for a Dropbox path
+ * This helps ensure consistent mapping between Dropbox and FileBird
+ *
+ * @since    1.0.0
+ * @param    string    $dropbox_path    The Dropbox folder path.
+ * @param    bool      $create          Whether to create folders if they don't exist.
+ * @return   int|false                  The FileBird folder ID or false if not found.
+ */
+private function get_filebird_folder_for_dropbox_path($dropbox_path, $create = true) {
+    // Normalize root path to FileBird
+    $root_path = '/FileBird';
+    $root_path = apply_filters('fbds_dropbox_root_path', $root_path);
+    
+    // If this is the root path, return 0 (FileBird root)
+    if ($dropbox_path === $root_path) {
+        return 0;
+    }
+    
+    // Ensure path starts with the root path
+    if (strpos($dropbox_path, $root_path) !== 0) {
+        $this->logger->log("Dropbox path not within root path: {$dropbox_path}", 'error');
+        return false;
+    }
+    
+    // Remove root path and split into parts
+    $relative_path = trim(substr($dropbox_path, strlen($root_path)), '/');
+    if (empty($relative_path)) {
+        return 0; // Root folder
+    }
+    
+    $path_parts = explode('/', $relative_path);
+    
+    // Start from FileBird root
+    $parent_id = 0;
+    $current_path = $root_path;
+    
+    // Navigate through each part of the path, creating folders as needed
+    foreach ($path_parts as $part) {
+        $current_path .= '/' . $part;
         
-        // If this is the root path, return 0 (FileBird root)
-        if ($dropbox_path === $root_path) {
-            return 0;
-        }
+        // Look for existing folder with maximum retries
+        $folder_id = false;
+        $retries = 3;
         
-        // Ensure path starts with the root path
-        if (strpos($dropbox_path, $root_path) !== 0) {
-            $this->logger->log("Dropbox path not within root path: {$dropbox_path}", 'error');
-            return false;
-        }
-        
-        // Remove root path and split into parts
-        $relative_path = trim(substr($dropbox_path, strlen($root_path)), '/');
-        if (empty($relative_path)) {
-            return 0; // Root folder
-        }
-        
-        $path_parts = explode('/', $relative_path);
-        
-        // Start from FileBird root
-        $parent_id = 0;
-        $current_path = $root_path;
-        
-        // Navigate through each part of the path, creating folders as needed
-        foreach ($path_parts as $part) {
-            $current_path .= '/' . $part;
-            
-            // Look for existing folder
+        while (!$folder_id && $retries > 0) {
             $folder_id = $this->filebird_connector->get_folder_by_name($part, $parent_id);
-            
-            if (!$folder_id && $create) {
-                // Create folder if it doesn't exist
+            if (!$folder_id) {
+                $retries--;
+                if ($retries > 0) {
+                    // Short pause before retry
+                    usleep(100000); // 0.1 seconds
+                }
+            }
+        }
+        
+        if (!$folder_id && $create) {
+            // Create folder if it doesn't exist, with retries
+            $retries = 3;
+            while (!$folder_id && $retries > 0) {
                 $folder_id = $this->filebird_connector->create_folder($part, $parent_id);
+                if (!$folder_id) {
+                    $retries--;
+                    if ($retries > 0) {
+                        // Short pause before retry
+                        usleep(200000); // 0.2 seconds
+                    }
+                }
+            }
+            
+            if ($folder_id) {
                 $this->logger->log("Created FileBird folder: {$part} (ID: {$folder_id}) with parent: {$parent_id}", 'info');
             }
-            
-            if (!$folder_id) {
-                $this->logger->log("Could not find/create FileBird folder for path: {$current_path}", 'error');
-                return false;
-            }
-            
-            $parent_id = $folder_id;
         }
         
-        return $parent_id;
-    }
-
-    /**
-     * Get the Dropbox path for a FileBird folder with more reliable path construction
-     *
-     * @since    1.0.0
-     * @param    int       $folder_id    The FileBird folder ID.
-     * @return   string|false           The Dropbox path or false if not found.
-     */
-    private function get_dropbox_path_for_filebird_folder($folder_id) {
-        // Get base path from settings
-        $root_path = '/FileBird'; // Default root path
-        $root_path = apply_filters('fbds_dropbox_root_path', $root_path);
-        
-        // Root folder case
-        if ($folder_id === 0) {
-            return $root_path;
-        }
-        
-        // Get the folder
-        $folder = $this->filebird_connector->get_folder($folder_id);
-        if (!$folder) {
-            $this->logger->log("Could not find FileBird folder with ID: {$folder_id}", 'error');
+        if (!$folder_id) {
+            $this->logger->log("Could not find/create FileBird folder for path: {$current_path}", 'error');
             return false;
         }
         
-        // Get the complete path by traversing up the folder hierarchy
-        $path_parts = array();
-        $path_parts[] = $folder->name;
-        
-        $current_parent = $folder->parent;
-        while ($current_parent !== 0) {
-            $parent_folder = $this->filebird_connector->get_folder($current_parent);
-            
-            if (!$parent_folder) {
-                $this->logger->log("Could not find parent folder with ID: {$current_parent}", 'error');
-                break;
-            }
-            
-            array_unshift($path_parts, $parent_folder->name);
-            $current_parent = $parent_folder->parent;
-        }
-        
-        // Build the full path
-        $full_path = $root_path;
-        foreach ($path_parts as $part) {
-            $full_path .= '/' . $part;
-        }
-        
-        return $full_path;
+        $parent_id = $folder_id;
     }
+    
+    return $parent_id;
+}
+
+/**
+ * Get the Dropbox path for a FileBird folder with more reliable path construction
+ *
+ * @since    1.0.0
+ * @param    int       $folder_id    The FileBird folder ID.
+ * @return   string|false           The Dropbox path or false if not found.
+ */
+private function get_dropbox_path_for_filebird_folder($folder_id) {
+    // Get base path from settings
+    $root_path = '/FileBird'; // Default root path
+    $root_path = apply_filters('fbds_dropbox_root_path', $root_path);
+    
+    // Root folder case
+    if ($folder_id === 0) {
+        return $root_path;
+    }
+    
+    // Get the folder - with additional error handling
+    $folder = $this->filebird_connector->get_folder($folder_id);
+    if (!$folder) {
+        // Log the error but don't stop sync - attempt to continue with root path
+        $this->logger->log("Could not find FileBird folder with ID: {$folder_id}, using root path", 'warning');
+        return $root_path;
+    }
+    
+    // Get the complete path by traversing up the folder hierarchy
+    $path_parts = array();
+    $path_parts[] = $folder->name;
+    
+    $current_parent = $folder->parent;
+    $max_depth = 10; // Prevent infinite loops
+    $depth = 0;
+    
+    while ($current_parent !== 0 && $depth < $max_depth) {
+        $parent_folder = $this->filebird_connector->get_folder($current_parent);
+        
+        if (!$parent_folder) {
+            $this->logger->log("Could not find parent folder with ID: {$current_parent}, using path parts collected so far", 'warning');
+            break;
+        }
+        
+        array_unshift($path_parts, $parent_folder->name);
+        $current_parent = $parent_folder->parent;
+        $depth++;
+    }
+    
+    // Build the full path
+    $full_path = $root_path;
+    foreach ($path_parts as $part) {
+        $full_path .= '/' . $part;
+    }
+    
+    return $full_path;
+}
 
     /**
      * Handle FileBird folder created event.
