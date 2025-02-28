@@ -148,11 +148,10 @@ function fbds_handle_webhook_request($request) {
             $challenge = $request->get_param('challenge');
             
             if ($challenge) {
-                // This is what Dropbox expects - return the challenge string
-                $response = new WP_REST_Response($challenge);
-                $response->set_status(200);
-                $response->header('Content-Type', 'text/plain');
-                return $response;
+                // FIXED: Return challenge directly as plain text without using WP_REST_Response
+                header('Content-Type: text/plain');
+                echo $challenge;
+                exit; // Important: prevent any additional output
             }
             
             return new WP_REST_Response('Invalid challenge', 400);

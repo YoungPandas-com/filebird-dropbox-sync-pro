@@ -93,36 +93,35 @@ class FileBird_Dropbox_Webhook_Handler {
         }
     }
 
-    /**
-     * Handle verification request from Dropbox with better error handling.
-     *
-     * @param WP_REST_Request $request The request object.
-     * @return WP_REST_Response The response object.
-     */
-    private function handle_verification_request($request) {
-        try {
-            // Get challenge parameter
-            $challenge = $request->get_param('challenge');
-            
-            if (!$challenge) {
-                $this->logger->log('Missing challenge parameter in Dropbox verification', 'warning');
-                // Return a 200 response anyway to prevent Dropbox from disabling the webhook
-                return new WP_REST_Response('', 200);
-            }
-            
-            $this->logger->log('Received verification challenge from Dropbox: ' . $challenge, 'info');
-            
-            // Return the challenge as a plain text response
-            $response = new WP_REST_Response($challenge);
-            $response->header('Content-Type', 'text/plain');
-            
-            return $response;
-        } catch (Exception $e) {
-            $this->logger->log('Error in verification handler: ' . $e->getMessage(), 'error');
-            // Return an empty 200 response to prevent Dropbox from disabling the webhook
+/**
+ * Handle verification request from Dropbox with better error handling.
+ *
+ * @param WP_REST_Request $request The request object.
+ * @return WP_REST_Response The response object.
+ */
+private function handle_verification_request($request) {
+    try {
+        // Get challenge parameter
+        $challenge = $request->get_param('challenge');
+        
+        if (!$challenge) {
+            $this->logger->log('Missing challenge parameter in Dropbox verification', 'warning');
+            // Return a 200 response anyway to prevent Dropbox from disabling the webhook
             return new WP_REST_Response('', 200);
         }
+        
+        $this->logger->log('Received verification challenge from Dropbox: ' . $challenge, 'info');
+        
+        // FIXED: Return challenge directly as plain text
+        header('Content-Type: text/plain');
+        echo $challenge;
+        exit; // Important: prevent any additional output
+    } catch (Exception $e) {
+        $this->logger->log('Error in verification handler: ' . $e->getMessage(), 'error');
+        // Return an empty 200 response to prevent Dropbox from disabling the webhook
+        return new WP_REST_Response('', 200);
     }
+}
 
     /**
      * Handle notification request from Dropbox.
