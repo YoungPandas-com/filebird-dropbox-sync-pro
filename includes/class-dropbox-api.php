@@ -594,6 +594,125 @@ class FileBird_Dropbox_API {
     }
 
     /**
+     * Check and refresh the access token if needed.
+     *
+     * @since    1.0.0
+     * @return   bool    Whether the token is valid (refreshed if needed).
+     */
+    public function check_and_refresh_token() {
+        // If we don't have a refresh token, we can't refresh
+        if (empty($this->refresh_token)) {
+            $this->logger->log('No refresh token available, cannot check token status', 'warning');
+            return false;
+        }
+        
+        // Try a simple API call to check if token is valid
+        $result = $this->make_request('users/get_current_account', [], 'POST');
+        
+        // If the call succeeded, token is valid
+        if (!is_wp_error($result) && !isset($result['error_summary'])) {
+            $this->logger->log('Dropbox token is valid', 'info');
+            return true;
+        }
+        
+        // Token may be expired, try to refresh
+        $this->logger->log('Dropbox token may be expired, attempting to refresh', 'info');
+        
+        $response = wp_remote_post('https://api.dropboxapi.com/oauth2/token', [
+            'body' => [
+                'grant_type' => 'refresh_token',
+                'refresh_token' => $this->refresh_token,
+                'client_id' => $this->app_key,
+                'client_secret' => $this->app_secret,
+            ],
+            'timeout' => 15,
+        ]);
+        
+        if (is_wp_error($response)) {
+            $this->logger->log('Error refreshing token: ' . $response->get_error_message(), 'error');
+            return false;
+        }
+        
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if (isset($body['access_token'])) {
+            // Success - update the token
+            $this->access_token = $body['access_token'];
+            update_option('fbds_dropbox_access_token', $this->access_token);
+            
+            // If refresh token was returned (rare), update it too
+            if (isset($body['refresh_token'])) {
+                $this->refresh_token = $body['refresh_token'];
+                update_option('fbds_dropbox_refresh_token', $this->refresh_token);
+            }
+            
+            $this->logger->log('Successfully refreshed Dropbox access token', 'info');
+            return true;
+        }
+        
+        $this->logger->log('Failed to refresh Dropbox token: ' . 
+            (isset($body['error_description']) ? $body['error_description'] : 'Unknown error'), 'error');
+        return false;
+    }
+
+    /**
+     * Get the current connection status with details.
+     *
+     * @since    1.0.0
+     * @return   array    Connection status details.
+     */
+    public function get_connection_status() {
+        $status = [
+            'connected' => false,
+            'app_key_set' => !empty($this->app_key),
+            'app_secret_set' => !empty($this->app_secret),
+            'access_token_set' => !empty($this->access_token),
+            'refresh_token_set' => !empty($this->refresh_token),
+            'error' => null
+        ];
+        
+        if (empty($this->access_token)) {
+            $status['error'] = 'No access token available';
+            return $status;
+        }
+        
+        if (empty($this->refresh_token)) {
+            $status['error'] = 'No refresh token available';
+        }
+        
+        // Try to get account info as a connection test
+        $response = wp_remote_get('https://api.dropboxapi.com/2/users/get_current_account', [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $this->access_token,
+            ],
+            'method' => 'POST',
+            'timeout' => 10,
+        ]);
+        
+        if (is_wp_error($response)) {
+            $status['error'] = 'Connection error: ' . $response->get_error_message();
+            return $status;
+        }
+        
+        $code = wp_remote_retrieve_response_code($response);
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if ($code === 200) {
+            $status['connected'] = true;
+            if (isset($body['email'])) {
+                $status['email'] = $body['email'];
+            }
+            if (isset($body['name']) && isset($body['name']['display_name'])) {
+                $status['name'] = $body['name']['display_name'];
+            }
+        } else {
+            $status['error'] = isset($body['error_summary']) ? $body['error_summary'] : 'HTTP error: ' . $code;
+        }
+        
+        return $status;
+    }
+
+    /**
      * Handle the Dropbox webhook.
      *
      * @since    1.0.0

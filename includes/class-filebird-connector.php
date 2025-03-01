@@ -1,6 +1,6 @@
 <?php
 /**
- * The FileBird integration class.
+ * The FileBird integration class with direct DB integration.
  *
  * @since      1.0.0
  * @package    FileBirdDropboxSyncPro
@@ -46,7 +46,7 @@ class FileBird_Connector {
      */
     private function debug($message) {
         if ($this->debug_mode) {
-            $this->logger->log('[DEBUG] ' . $message, 'info');
+            $this->logger->log('[DEBUG-FB] ' . $message, 'info');
         }
     }
 
@@ -59,17 +59,10 @@ class FileBird_Connector {
     public function get_all_folders() {
         try {
             global $wpdb;
-            $folders = array();
             
-            // Check if FileBird is active
-            if (!$this->is_filebird_active()) {
-                $this->logger->log('FileBird plugin not detected', 'error');
-                return array();
-            }
-
-            // Method 1: Try using fbv table directly (most reliable)
+            // Direct query to get fbv folders - most reliable method
             if ($this->check_fbv_table_exists()) {
-                $this->debug('Using fbv table');
+                $this->debug('Querying fbv table directly');
                 
                 $fbv_table = $wpdb->prefix . 'fbv';
                 
@@ -80,147 +73,30 @@ class FileBird_Connector {
                 );
                 
                 if (!empty($folders)) {
-                    $this->debug('Found ' . count($folders) . ' folders via fbv table');
+                    $this->debug('Found ' . count($folders) . ' folders');
                     return $folders;
                 }
             }
             
-            // Method 2: Try direct query via term taxonomy
-            $taxonomy_name = $this->get_filebird_taxonomy_name();
-            
-            if (!empty($taxonomy_name)) {
-                $this->debug('Using taxonomy_name: ' . $taxonomy_name);
-                
-                $folders = $wpdb->get_results(
-                    $wpdb->prepare(
-                        "SELECT t.term_id, t.name, tt.parent 
-                        FROM {$wpdb->terms} AS t 
-                        INNER JOIN {$wpdb->term_taxonomy} AS tt ON t.term_id = tt.term_id 
-                        WHERE tt.taxonomy = %s 
-                        ORDER BY t.name ASC",
-                        $taxonomy_name
-                    )
-                );
-                
-                if (!empty($folders)) {
-                    $this->debug('Found ' . count($folders) . ' folders via taxonomy');
-                    return $folders;
-                }
-            }
-            
-            // Method 3: Last resort - Try using FileBird's native API
+            // Try using FileBird's native API as fallback
             if (class_exists('\\FileBird\\Model\\Folder')) {
                 $this->debug('Using FileBird native API');
                 
-                // Check if the allFolders method exists
-                if (method_exists('\\FileBird\\Model\\Folder', 'allFolders')) {
-                    try {
-                        $api_folders = \FileBird\Model\Folder::allFolders();
-                        
-                        if (!empty($api_folders)) {
-                            // Convert to standard format
-                            $folders = array();
-                            foreach ($api_folders as $folder) {
-                                $obj = new stdClass();
-                                $obj->term_id = intval($folder['id']);
-                                $obj->name = $folder['name'];
-                                $obj->parent = intval($folder['parent']);
-                                $folders[] = $obj;
-                            }
-                            $this->debug('Found ' . count($folders) . ' folders via API');
-                            return $folders;
-                        }
-                    } catch (\Exception $e) {
-                        $this->logger->log('Error using FileBird API: ' . $e->getMessage(), 'error');
-                    }
-                }
-            }
-            
-            $this->debug('No folders found using any method');
-            return array();
-            
-        } catch (\Exception $e) {
-            $this->logger->log('Error in get_all_folders: ' . $e->getMessage(), 'error');
-            return array();
-        }
-    }
-
-    /**
-     * Get folders by parent ID.
-     *
-     * @since    1.0.0
-     * @param    int       $parent_id    The parent folder ID.
-     * @return   array                   The list of child folders.
-     */
-    public function get_folders_by_parent($parent_id) {
-        try {
-            global $wpdb;
-            $folders = array();
-            
-            // Check FileBird is active
-            if (!$this->is_filebird_active()) {
-                return array();
-            }
-            
-            // Method 1: Try fbv table (most reliable)
-            if ($this->check_fbv_table_exists()) {
-                $fbv_table = $wpdb->prefix . 'fbv';
-                
-                $folders = $wpdb->get_results(
-                    $wpdb->prepare(
-                        "SELECT id as term_id, name, parent 
-                        FROM {$fbv_table} 
-                        WHERE parent = %d 
-                        ORDER BY name ASC",
-                        $parent_id
-                    )
-                );
-                
-                if (!empty($folders)) {
-                    return $folders;
-                }
-            }
-            
-            // Method 2: Direct database query via taxonomy
-            $taxonomy_name = $this->get_filebird_taxonomy_name();
-            
-            if (!empty($taxonomy_name)) {
-                $folders = $wpdb->get_results(
-                    $wpdb->prepare(
-                        "SELECT t.term_id, t.name, tt.parent 
-                        FROM {$wpdb->terms} AS t 
-                        INNER JOIN {$wpdb->term_taxonomy} AS tt ON t.term_id = tt.term_id 
-                        WHERE tt.taxonomy = %s AND tt.parent = %d 
-                        ORDER BY t.name ASC",
-                        $taxonomy_name,
-                        $parent_id
-                    )
-                );
-                
-                if (!empty($folders)) {
-                    return $folders;
-                }
-            }
-            
-            // Method 3: Last resort - Try using FileBird's native API
-            if (class_exists('\\FileBird\\Model\\Folder') && method_exists('\\FileBird\\Model\\Folder', 'allFolders')) {
                 try {
                     $api_folders = \FileBird\Model\Folder::allFolders();
                     
                     if (!empty($api_folders)) {
+                        // Convert to standard format
                         $folders = array();
                         foreach ($api_folders as $folder) {
-                            if ($folder['parent'] == $parent_id) {
-                                $obj = new stdClass();
-                                $obj->term_id = intval($folder['id']);
-                                $obj->name = $folder['name'];
-                                $obj->parent = intval($folder['parent']);
-                                $folders[] = $obj;
-                            }
+                            $obj = new stdClass();
+                            $obj->term_id = intval($folder->id);
+                            $obj->name = $folder->name;
+                            $obj->parent = intval($folder->parent);
+                            $folders[] = $obj;
                         }
-                        if (!empty($folders)) {
-                            return $folders;
-                        }
+                        $this->debug('Found ' . count($folders) . ' folders via API');
+                        return $folders;
                     }
                 } catch (\Exception $e) {
                     $this->logger->log('Error using FileBird API: ' . $e->getMessage(), 'error');
@@ -230,7 +106,7 @@ class FileBird_Connector {
             return array();
             
         } catch (\Exception $e) {
-            $this->logger->log('Error in get_folders_by_parent: ' . $e->getMessage(), 'error');
+            $this->logger->log('Error in get_all_folders: ' . $e->getMessage(), 'error');
             return array();
         }
     }
@@ -250,12 +126,7 @@ class FileBird_Connector {
                 return false;
             }
             
-            // Check FileBird is active
-            if (!$this->is_filebird_active()) {
-                return false;
-            }
-            
-            // Method 1: Try fbv table directly (most reliable)
+            // Direct query to fbv table - most reliable method
             if ($this->check_fbv_table_exists()) {
                 $fbv_table = $wpdb->prefix . 'fbv';
                 
@@ -273,40 +144,20 @@ class FileBird_Connector {
                 }
             }
             
-            // Method 2: Try direct database query via taxonomy
-            $taxonomy_name = $this->get_filebird_taxonomy_name();
-            
-            if (!empty($taxonomy_name)) {
-                $folder = $wpdb->get_row(
-                    $wpdb->prepare(
-                        "SELECT t.term_id, t.name, tt.parent 
-                        FROM {$wpdb->terms} AS t 
-                        INNER JOIN {$wpdb->term_taxonomy} AS tt ON t.term_id = tt.term_id 
-                        WHERE tt.taxonomy = %s AND t.term_id = %d",
-                        $taxonomy_name,
-                        $folder_id
-                    )
-                );
-                
-                if ($folder) {
-                    return $folder;
-                }
-            }
-            
-            // Method 3: Last resort - Try using FileBird's native API
+            // Try using FileBird's native API as fallback
             if (class_exists('\\FileBird\\Model\\Folder') && method_exists('\\FileBird\\Model\\Folder', 'findById')) {
                 try {
                     $folder = \FileBird\Model\Folder::findById($folder_id);
                     
-                    if (!empty($folder)) {
+                    if ($folder) {
                         $obj = new stdClass();
-                        $obj->term_id = intval($folder['id']);
-                        $obj->name = $folder['name'];
-                        $obj->parent = intval($folder['parent']);
+                        $obj->term_id = intval($folder_id);
+                        $obj->name = $folder->name;
+                        $obj->parent = intval($folder->parent);
                         return $obj;
                     }
                 } catch (\Exception $e) {
-                    $this->logger->log('Error using FileBird API: ' . $e->getMessage(), 'error');
+                    $this->logger->log('Error using FileBird API to get folder: ' . $e->getMessage(), 'error');
                 }
             }
             
@@ -319,7 +170,7 @@ class FileBird_Connector {
     }
 
     /**
-     * Get a folder by name and parent ID.
+     * Get a folder by name and parent ID using the same logic as FileBird.
      *
      * @since    1.0.0
      * @param    string    $name         The folder name.
@@ -334,12 +185,13 @@ class FileBird_Connector {
                 return false;
             }
             
-            // Check FileBird is active
-            if (!$this->is_filebird_active()) {
-                return false;
-            }
+            // Sanitize the name exactly as FileBird does
+            $name = sanitize_text_field(wp_kses_post($name));
+            $parent_id = intval($parent_id);
             
-            // Method 1: Try fbv table (most reliable)
+            $this->debug("Looking for folder: '$name' with parent: $parent_id");
+            
+            // Direct query to fbv table - most reliable method
             if ($this->check_fbv_table_exists()) {
                 $fbv_table = $wpdb->prefix . 'fbv';
                 
@@ -354,48 +206,29 @@ class FileBird_Connector {
                 );
                 
                 if ($folder_id) {
+                    $this->debug("Found folder ID: $folder_id");
                     return (int)$folder_id;
+                } else {
+                    $this->debug("No folder found with name: '$name' in parent: $parent_id");
                 }
             }
             
-            // Method 2: Direct database query via taxonomy
-            $taxonomy_name = $this->get_filebird_taxonomy_name();
-            
-            if (!empty($taxonomy_name)) {
-                $folder_id = $wpdb->get_var(
-                    $wpdb->prepare(
-                        "SELECT t.term_id 
-                        FROM {$wpdb->terms} AS t 
-                        INNER JOIN {$wpdb->term_taxonomy} AS tt ON t.term_id = tt.term_id 
-                        WHERE tt.taxonomy = %s AND t.name = %s AND tt.parent = %d",
-                        $taxonomy_name,
-                        $name,
-                        $parent_id
-                    )
-                );
-                
-                if ($folder_id) {
-                    return (int)$folder_id;
-                }
-            }
-            
-            // Method 3: Try using FileBird's native API to search for the folder
-            if (class_exists('\\FileBird\\Model\\Folder') && method_exists('\\FileBird\\Model\\Folder', 'allFolders')) {
+            // Try using FileBird's API as fallback
+            if (class_exists('\\FileBird\\Model\\Folder')) {
                 try {
-                    $all_folders = \FileBird\Model\Folder::allFolders();
+                    $this->debug("Trying FileBird API to find folder");
+                    $folder = \FileBird\Model\Folder::detail($name, $parent_id);
                     
-                    if (!empty($all_folders)) {
-                        foreach ($all_folders as $folder) {
-                            if ($folder['name'] === $name && (int)$folder['parent'] === (int)$parent_id) {
-                                return (int)$folder['id'];
-                            }
-                        }
+                    if ($folder && isset($folder->id)) {
+                        $this->debug("Found folder via API: " . $folder->id);
+                        return (int)$folder->id;
                     }
                 } catch (\Exception $e) {
-                    $this->logger->log('Error using FileBird API: ' . $e->getMessage(), 'error');
+                    $this->logger->log('Error using FileBird API to find folder: ' . $e->getMessage(), 'error');
                 }
             }
             
+            $this->debug("Folder not found by any method");
             return false;
             
         } catch (\Exception $e) {
@@ -405,7 +238,7 @@ class FileBird_Connector {
     }
 
     /**
-     * Create a new folder.
+     * Create a new folder using FileBird's native method when possible.
      *
      * @since    1.0.0
      * @param    string    $name         The folder name.
@@ -415,81 +248,91 @@ class FileBird_Connector {
     public function create_folder($name, $parent_id = 0) {
         try {
             if (empty($name)) {
+                $this->debug("Cannot create folder with empty name");
                 return false;
             }
             
-            // Check if FileBird is active
-            if (!$this->is_filebird_active()) {
-                return false;
+            $parent_id = intval($parent_id);
+            
+            $this->debug("Creating folder: '$name' with parent: $parent_id");
+            
+            // Method 1: Try native FileBird API (most reliable)
+            if (class_exists('\\FileBird\\Model\\Folder') && method_exists('\\FileBird\\Model\\Folder', 'newFolder')) {
+                try {
+                    $this->debug("Using FileBird native newFolder API");
+                    $result = \FileBird\Model\Folder::newFolder($name, $parent_id);
+                    
+                    if ($result && isset($result['id'])) {
+                        $this->debug("Created folder via API with ID: " . $result['id']);
+                        $this->logger->log("Created FileBird folder: $name (ID: " . $result['id'] . ")", 'info');
+                        return (int)$result['id'];
+                    } else {
+                        $this->debug("API returned no folder ID");
+                    }
+                } catch (\Exception $e) {
+                    $this->logger->log('Error using FileBird API to create folder: ' . $e->getMessage(), 'error');
+                }
             }
             
-            // Check if folder already exists
-            $existing = $this->get_folder_by_name($name, $parent_id);
-            if ($existing) {
-                return $existing;
-            }
-            
-            // Method 1: Try direct DB insertion
+            // Method 2: Simulate FileBird's folder creation with direct DB access
             if ($this->check_fbv_table_exists()) {
                 global $wpdb;
                 $fbv_table = $wpdb->prefix . 'fbv';
                 
-                // Handle user mode for FileBird if available
-                $created_by = 0;
+                // Sanitize name exactly as FileBird does
+                $name = sanitize_text_field(wp_kses_post($name));
                 
-                // Insert new folder
-                $result = $wpdb->insert(
-                    $fbv_table,
-                    [
-                        'name' => $name,
-                        'parent' => $parent_id,
-                        'created_by' => $created_by,
-                        'type' => 0 // 0 for folder
-                    ],
-                    ['%s', '%d', '%d', '%d']
+                // Get the max ord exactly as FileBird does
+                $ord = $wpdb->get_var(
+                    $wpdb->prepare(
+                        "SELECT MAX(ord) FROM {$fbv_table} WHERE parent = %d AND created_by = %d", 
+                        $parent_id, 
+                        apply_filters('fbv_folder_created_by', 0)
+                    )
                 );
                 
-                if ($result) {
-                    $folder_id = $wpdb->insert_id;
-                    $this->logger->log('Created FileBird folder via direct DB: ' . $name . ' (ID: ' . $folder_id . ')', 'info');
-                    return $folder_id;
-                }
-            }
-            
-            // Method 2: Try traditional WP terms method
-            $taxonomy_name = $this->get_filebird_taxonomy_name();
-            
-            if (!empty($taxonomy_name)) {
-                $term = wp_insert_term($name, $taxonomy_name, [
-                    'parent' => $parent_id
-                ]);
+                // Insert folder record
+                $inserted = $wpdb->insert(
+                    $fbv_table,
+                    array(
+                        'name' => $name,
+                        'parent' => $parent_id,
+                        'type' => 0, // 0 for folder
+                        'created_by' => apply_filters('fbv_folder_created_by', 0),
+                        'ord' => is_null($ord) ? 0 : (intval($ord) + 1)
+                    ),
+                    array('%s', '%d', '%d', '%d', '%d')
+                );
                 
-                if (!is_wp_error($term)) {
-                    $this->logger->log('Created FileBird folder via WP terms: ' . $name . ' (ID: ' . $term['term_id'] . ')', 'info');
-                    return $term['term_id'];
-                } else {
-                    $this->logger->log('Error creating FileBird folder via WP terms: ' . $term->get_error_message(), 'error');
-                }
-            }
-            
-            // Method 3: Try using FileBird's native API to create the folder
-            if (class_exists('\\FileBird\\Model\\Folder') && method_exists('\\FileBird\\Model\\Folder', 'newOrGet')) {
-                try {
-                    $result = \FileBird\Model\Folder::newOrGet($name, $parent_id);
+                if ($inserted) {
+                    $folder_id = $wpdb->insert_id;
                     
-                    if (isset($result['id'])) {
-                        $this->logger->log('Created FileBird folder: ' . $name . ' (ID: ' . $result['id'] . ')', 'info');
-                        return $result['id'];
-                    } elseif (isset($result[0]['id'])) {
-                        // Some versions might return different format
-                        $this->logger->log('Created/Retrieved FileBird folder: ' . $name . ' (ID: ' . $result[0]['id'] . ')', 'info');
-                        return $result[0]['id'];
+                    // Trigger the same action FileBird does
+                    $folder_data = array(
+                        'title' => $name,
+                        'id' => $folder_id,
+                        'key' => $folder_id,
+                        'type' => 0,
+                        'parent' => $parent_id,
+                        'children' => array(),
+                        'data-count' => 0,
+                        'data-id' => $folder_id
+                    );
+                    
+                    // Trigger action to maintain compatibility
+                    if (function_exists('do_action')) {
+                        do_action('fbv_after_folder_created', $folder_id, $folder_data);
                     }
-                } catch (\Exception $e) {
-                    $this->logger->log('Error creating FileBird folder via API: ' . $e->getMessage(), 'error');
+                    
+                    $this->debug("Created folder via direct DB with ID: $folder_id");
+                    $this->logger->log("Created FileBird folder: $name (ID: $folder_id)", 'info');
+                    return $folder_id;
+                } else {
+                    $this->debug("DB insert failed: " . $wpdb->last_error);
                 }
             }
             
+            $this->logger->log("Failed to create FileBird folder: $name", 'error');
             return false;
             
         } catch (\Exception $e) {
@@ -509,22 +352,14 @@ class FileBird_Connector {
         try {
             global $wpdb;
             
-            if (empty($folder_id)) {
+            if (empty($folder_id) || !is_numeric($folder_id)) {
                 return array();
             }
             
-            // Check FileBird is active
-            if (!$this->is_filebird_active()) {
-                return array();
-            }
+            $folder_id = intval($folder_id);
+            $this->debug("Getting attachments in folder ID: $folder_id");
             
-            // Check if folder exists
-            $folder = $this->get_folder($folder_id);
-            if (!$folder) {
-                return array();
-            }
-            
-            // Method 1: Using fbv_attachment table (most reliable)
+            // Method 1: Direct query to fbv_attachment_folder table (most reliable)
             if ($this->check_fbv_attachment_table_exists()) {
                 $fbv_attachment_table = $wpdb->prefix . 'fbv_attachment_folder';
                 
@@ -540,70 +375,16 @@ class FileBird_Connector {
                 );
                 
                 if (!empty($attachments)) {
+                    $this->debug("Found " . count($attachments) . " attachments");
                     return $attachments;
                 }
             }
             
-            // Method 2: Using term relationships
-            $taxonomy_name = $this->get_filebird_taxonomy_name();
-            
-            if (!empty($taxonomy_name)) {
-                $attachments = $wpdb->get_results(
-                    $wpdb->prepare(
-                        "SELECT p.* 
-                        FROM {$wpdb->posts} p 
-                        INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id 
-                        INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id 
-                        WHERE tt.term_id = %d 
-                        AND tt.taxonomy = %s 
-                        AND p.post_type = 'attachment'",
-                        $folder_id,
-                        $taxonomy_name
-                    )
-                );
-                
-                if (!empty($attachments)) {
-                    return $attachments;
-                }
-            }
-            
-            // Method 3: Check for _fbv meta
-            $attachments = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT p.* 
-                    FROM {$wpdb->posts} p 
-                    INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id 
-                    WHERE pm.meta_key = '_fbv' 
-                    AND pm.meta_value = %d 
-                    AND p.post_type = 'attachment'",
-                    $folder_id
-                )
-            );
-            
-            if (!empty($attachments)) {
-                return $attachments;
-            }
-            
-            // Method 4: Check for _fb_folder_id meta (for older versions)
-            $attachments = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT p.* 
-                    FROM {$wpdb->posts} p 
-                    INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id 
-                    WHERE pm.meta_key = '_fb_folder_id' 
-                    AND pm.meta_value = %d 
-                    AND p.post_type = 'attachment'",
-                    $folder_id
-                )
-            );
-            
-            if (!empty($attachments)) {
-                return $attachments;
-            }
-            
-            // Method 5: Using FileBird's native API if available
-            if (class_exists('\\FileBird\\Classes\\Helpers') && method_exists('\\FileBird\\Classes\\Helpers', 'getAttachmentIdsByFolderId')) {
+            // Method 2: Using FileBird's native API as fallback
+            if (class_exists('\\FileBird\\Classes\\Helpers') && 
+                method_exists('\\FileBird\\Classes\\Helpers', 'getAttachmentIdsByFolderId')) {
                 try {
+                    $this->debug("Using FileBird API to get attachments");
                     $attachment_ids = \FileBird\Classes\Helpers::getAttachmentIdsByFolderId($folder_id);
                     
                     if (!empty($attachment_ids)) {
@@ -614,6 +395,7 @@ class FileBird_Connector {
                                 $attachments[] = $attachment;
                             }
                         }
+                        $this->debug("Found " . count($attachments) . " attachments via API");
                         return $attachments;
                     }
                 } catch (\Exception $e) {
@@ -621,6 +403,7 @@ class FileBird_Connector {
                 }
             }
             
+            $this->debug("No attachments found in folder");
             return array();
             
         } catch (\Exception $e) {
@@ -644,12 +427,10 @@ class FileBird_Connector {
                 return false;
             }
             
-            // Check FileBird is active
-            if (!$this->is_filebird_active()) {
-                return false;
-            }
+            $attachment_id = intval($attachment_id);
+            $this->debug("Getting folder for attachment ID: $attachment_id");
             
-            // Method 1: Check fbv_attachment table (most reliable)
+            // Method 1: Direct query to fbv_attachment_folder table (most reliable)
             if ($this->check_fbv_attachment_table_exists()) {
                 $fbv_attachment_table = $wpdb->prefix . 'fbv_attachment_folder';
                 
@@ -662,56 +443,28 @@ class FileBird_Connector {
                     )
                 );
                 
-                if (!empty($folder_id)) {
+                if ($folder_id !== null) {
+                    $this->debug("Found folder ID: $folder_id");
                     return (int)$folder_id;
                 }
             }
             
-            // Method 2: Check attachment meta
-            $folder_id = get_post_meta($attachment_id, '_fbv', true);
-            if (!empty($folder_id)) {
-                return (int)$folder_id;
-            }
-            
-            // Method 3: Check alternate meta key
-            $folder_id = get_post_meta($attachment_id, '_fb_folder_id', true);
-            if (!empty($folder_id)) {
-                return (int)$folder_id;
-            }
-            
-            // Method 4: Check term relationships
-            $taxonomy_name = $this->get_filebird_taxonomy_name();
-            
-            if (!empty($taxonomy_name)) {
-                $folder_id = $wpdb->get_var(
-                    $wpdb->prepare(
-                        "SELECT tt.term_id 
-                        FROM {$wpdb->term_relationships} tr 
-                        INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id 
-                        WHERE tt.taxonomy = %s 
-                        AND tr.object_id = %d",
-                        $taxonomy_name,
-                        $attachment_id
-                    )
-                );
-                
-                if (!empty($folder_id)) {
-                    return (int)$folder_id;
-                }
-            }
-            
-            // Method 5: Using FileBird's native API if available
-            if (class_exists('\\FileBird\\Model\\Folder') && method_exists('\\FileBird\\Model\\Folder', 'getFolderFromPostId')) {
+            // Method 2: Using FileBird's native API as fallback
+            if (class_exists('\\FileBird\\Model\\Folder') && 
+                method_exists('\\FileBird\\Model\\Folder', 'getFolderFromPostId')) {
                 try {
+                    $this->debug("Using FileBird API to get folder");
                     $folder = \FileBird\Model\Folder::getFolderFromPostId($attachment_id);
                     if (!empty($folder) && isset($folder[0]->folder_id)) {
+                        $this->debug("Found folder via API: " . $folder[0]->folder_id);
                         return (int)$folder[0]->folder_id;
                     }
                 } catch (\Exception $e) {
-                    $this->logger->log('Error using FileBird API: ' . $e->getMessage(), 'error');
+                    $this->logger->log('Error using FileBird API to get folder: ' . $e->getMessage(), 'error');
                 }
             }
             
+            $this->debug("No folder found for attachment");
             return false;
             
         } catch (\Exception $e) {
@@ -720,161 +473,148 @@ class FileBird_Connector {
         }
     }
 
-/**
- * Move an attachment to a folder.
- *
- * @since    1.0.0
- * @param    int       $attachment_id    The attachment ID.
- * @param    int       $folder_id        The destination folder ID.
- * @return   bool                        Whether the move was successful.
- */
-public function move_attachment_to_folder($attachment_id, $folder_id) {
-    try {
-        global $wpdb;
-        
-        if (empty($attachment_id) || empty($folder_id)) {
-            $this->debug("Invalid parameters: attachment_id={$attachment_id}, folder_id={$folder_id}");
-            return false;
-        }
-        
-        // Verify attachment exists
-        $attachment = get_post($attachment_id);
-        if (!$attachment || $attachment->post_type !== 'attachment') {
-            $this->debug("Attachment not found: {$attachment_id}");
-            return false;
-        }
-        
-        // Verify folder exists
-        $folder = $this->get_folder($folder_id);
-        if (!$folder) {
-            $this->debug("Folder not found: {$folder_id}");
-            return false;
-        }
-        
-        $this->debug("Moving attachment {$attachment_id} to folder {$folder_id}");
-        
-        // Get current folder for action trigger
-        $current_folder_id = $this->get_folder_for_attachment($attachment_id);
-        
-        // Track whether any method succeeded
-        $success = false;
-        
-        // Method 1: Try using FileBird's native API (most reliable)
-        if (class_exists('\\FileBird\\Model\\Folder') && method_exists('\\FileBird\\Model\\Folder', 'setFoldersForPosts')) {
-            try {
-                $this->debug("Trying FileBird API method");
-                $ids = array($attachment_id);
-                $result = \FileBird\Model\Folder::setFoldersForPosts($ids, $folder_id);
-                
-                if ($result !== false) {
-                    $this->debug("FileBird API method succeeded");
-                    $success = true;
-                }
-            } catch (\Exception $e) {
-                $this->debug("FileBird API method failed: " . $e->getMessage());
+    /**
+     * Move an attachment to a folder using FileBird's native method when possible.
+     *
+     * @since    1.0.0
+     * @param    int       $attachment_id    The attachment ID.
+     * @param    int       $folder_id        The destination folder ID.
+     * @return   bool                        Whether the move was successful.
+     */
+    public function move_attachment_to_folder($attachment_id, $folder_id) {
+        try {
+            if (empty($attachment_id) || !is_numeric($folder_id)) {
+                $this->debug("Invalid parameters: attachment_id=$attachment_id, folder_id=$folder_id");
+                return false;
             }
-        }
-        
-        // Method 2: Try using fbv_attachment_folder table
-        if (!$success && $this->check_fbv_attachment_table_exists()) {
-            $this->debug("Trying direct DB method (fbv_attachment_folder)");
-            $fbv_attachment_table = $wpdb->prefix . 'fbv_attachment_folder';
             
-            // Check if record exists
-            $exists = $wpdb->get_var(
-                $wpdb->prepare(
-                    "SELECT COUNT(*) 
-                    FROM {$fbv_attachment_table} 
-                    WHERE attachment_id = %d",
-                    $attachment_id
-                )
-            );
+            $attachment_id = intval($attachment_id);
+            $folder_id = intval($folder_id);
             
-            if ($exists) {
-                // Update existing record
-                $result = $wpdb->update(
-                    $fbv_attachment_table,
-                    ['folder_id' => $folder_id],
-                    ['attachment_id' => $attachment_id],
-                    ['%d'],
-                    ['%d']
+            // Verify attachment exists
+            $attachment = get_post($attachment_id);
+            if (!$attachment || $attachment->post_type !== 'attachment') {
+                $this->debug("Attachment not found: $attachment_id");
+                return false;
+            }
+            
+            // Skip verification for root folder (0)
+            if ($folder_id > 0) {
+                // Verify folder exists
+                $folder_exists = $this->get_folder($folder_id);
+                if (!$folder_exists) {
+                    $this->debug("Folder not found: $folder_id");
+                    return false;
+                }
+            }
+            
+            $this->debug("Moving attachment $attachment_id to folder $folder_id");
+            
+            // Get current folder for action hook
+            $current_folder_id = $this->get_folder_for_attachment($attachment_id);
+            
+            // Method 1: Try FileBird's native API (most reliable)
+            if (class_exists('\\FileBird\\Model\\Folder') && 
+                method_exists('\\FileBird\\Model\\Folder', 'setFoldersForPosts')) {
+                try {
+                    $this->debug("Using FileBird's native setFoldersForPosts method");
+                    \FileBird\Model\Folder::setFoldersForPosts($attachment_id, $folder_id);
+                    
+                    // Double-check if it worked
+                    $new_folder_id = $this->get_folder_for_attachment($attachment_id);
+                    if ((int)$new_folder_id === (int)$folder_id) {
+                        $this->debug("Successfully moved attachment to folder $folder_id using API");
+                        if ($current_folder_id !== false && $current_folder_id != $folder_id) {
+                            do_action('filebird_attachment_moved', $attachment_id, $current_folder_id, $folder_id);
+                        }
+                        return true;
+                    } else {
+                        $this->debug("API call didn't update folder relationship");
+                    }
+                } catch (\Exception $e) {
+                    $this->logger->log('Error using FileBird API: ' . $e->getMessage(), 'error');
+                }
+            }
+            
+            // Method 2: Directly update the database just like FileBird does
+            if ($this->check_fbv_attachment_table_exists()) {
+                global $wpdb;
+                $fbv_attachment_table = $wpdb->prefix . 'fbv_attachment_folder';
+                
+                // Get user mode setting to handle folder ownership correctly
+                $user_has_own_folder = false;
+                if (class_exists('\\FileBird\\Model\\SettingModel')) {
+                    try {
+                        $settingModel = \FileBird\Model\SettingModel::getInstance();
+                        $user_has_own_folder = $settingModel->get('user_mode') === '1';
+                    } catch (\Exception $e) {
+                        $this->debug("Error getting user_mode setting: " . $e->getMessage());
+                    }
+                }
+                
+                $current_user_id = get_current_user_id();
+                
+                // Trigger before action
+                if (function_exists('do_action')) {
+                    do_action('fbv_before_setting_folder', $attachment_id, $folder_id);
+                }
+                
+                // Delete existing records - use the exact same query FileBird uses
+                $wpdb->query(
+                    $wpdb->prepare(
+                        "DELETE FROM {$wpdb->prefix}fbv_attachment_folder 
+                        WHERE `attachment_id` = %d 
+                        AND `folder_id` IN (
+                            SELECT `id` FROM {$wpdb->prefix}fbv 
+                            WHERE `created_by` = %d
+                        )",
+                        $attachment_id, 
+                        $user_has_own_folder ? $current_user_id : 0
+                    )
                 );
-            } else {
-                // Insert new record
-                $result = $wpdb->insert(
-                    $fbv_attachment_table,
-                    [
-                        'attachment_id' => $attachment_id,
-                        'folder_id' => $folder_id
-                    ],
-                    ['%d', '%d']
-                );
-            }
-            
-            if ($result !== false) {
-                $this->debug("Direct DB method succeeded");
-                $success = true;
-            } else {
-                $this->debug("Direct DB method failed: " . $wpdb->last_error);
-            }
-        }
-        
-        // Method 3: Try taxonomy method
-        if (!$success) {
-            $taxonomy_name = $this->get_filebird_taxonomy_name();
-            
-            if (!empty($taxonomy_name)) {
-                $this->debug("Trying taxonomy method with taxonomy: {$taxonomy_name}");
                 
-                // Remove from current folder if it exists
-                if ($current_folder_id) {
-                    wp_remove_object_terms($attachment_id, $current_folder_id, $taxonomy_name);
+                // Insert new record if folder_id > 0
+                if ($folder_id > 0) {
+                    $result = $wpdb->insert(
+                        $fbv_attachment_table,
+                        array(
+                            'attachment_id' => $attachment_id,
+                            'folder_id' => $folder_id
+                        ),
+                        array('%d', '%d')
+                    );
+                    
+                    if ($result === false) {
+                        $this->debug("DB insert failed: " . $wpdb->last_error);
+                        return false;
+                    }
                 }
                 
-                // Add to new folder
-                $result = wp_set_object_terms($attachment_id, $folder_id, $taxonomy_name);
+                // Clean post cache like FileBird does
+                clean_post_cache($attachment_id);
                 
-                if (!is_wp_error($result) && !empty($result)) {
-                    $this->debug("Taxonomy method succeeded");
-                    $success = true;
-                } else {
-                    $error_msg = is_wp_error($result) ? $result->get_error_message() : "Unknown error";
-                    $this->debug("Taxonomy method failed: {$error_msg}");
+                // Trigger after action hook
+                if (function_exists('do_action')) {
+                    do_action('fbv_after_set_folder', $attachment_id, $folder_id);
+                    
+                    // Also trigger filebird_attachment_moved action for our plugin to detect
+                    if ($current_folder_id !== false && $current_folder_id != $folder_id) {
+                        do_action('filebird_attachment_moved', $attachment_id, $current_folder_id, $folder_id);
+                    }
                 }
+                
+                $this->debug("Successfully moved attachment to folder using direct DB method");
+                return true;
             }
+            
+            $this->debug("Failed to move attachment to folder");
+            return false;
+            
+        } catch (\Exception $e) {
+            $this->logger->log('Error in move_attachment_to_folder: ' . $e->getMessage(), 'error');
+            return false;
         }
-        
-        // Method 4: Always update post meta regardless of other methods
-        update_post_meta($attachment_id, '_fbv', $folder_id);
-        update_post_meta($attachment_id, '_fb_folder_id', $folder_id);
-        
-        // Check if at least the metadata was updated
-        $updated_folder_id = get_post_meta($attachment_id, '_fbv', true);
-        if ((int)$updated_folder_id === (int)$folder_id) {
-            $this->debug("Post meta method succeeded");
-            $success = true;
-        }
-        
-        // Trigger action for compatibility if there was a change
-        if ($success && $current_folder_id !== $folder_id) {
-            do_action('filebird_attachment_moved', $attachment_id, $current_folder_id, $folder_id);
-            $this->debug("Triggered filebird_attachment_moved action");
-        }
-        
-        if ($success) {
-            $this->logger->log("Successfully moved attachment {$attachment_id} to folder {$folder_id}", 'info');
-        } else {
-            $this->logger->log("Failed to move attachment {$attachment_id} to folder {$folder_id}", 'error');
-        }
-        
-        return $success;
-        
-    } catch (\Exception $e) {
-        $this->logger->log('Error in move_attachment_to_folder: ' . $e->getMessage(), 'error');
-        $this->debug("Exception: " . $e->getMessage());
-        return false;
     }
-}
 
     /**
      * Get an attachment by filename.
@@ -891,21 +631,24 @@ public function move_attachment_to_folder($attachment_id, $folder_id) {
                 return false;
             }
             
-            // Try by guid
+            $this->debug("Looking for attachment with filename: $filename");
+            
+            // 1. Try by searching the _wp_attached_file meta for the exact filename
             $attachment_id = $wpdb->get_var(
                 $wpdb->prepare(
-                    "SELECT ID FROM {$wpdb->posts} 
-                    WHERE post_type = 'attachment' 
-                    AND guid LIKE %s",
+                    "SELECT post_id FROM {$wpdb->postmeta} 
+                    WHERE meta_key = '_wp_attached_file' 
+                    AND meta_value LIKE %s",
                     '%/' . $wpdb->esc_like($filename)
                 )
             );
             
             if ($attachment_id) {
+                $this->debug("Found by _wp_attached_file meta: $attachment_id");
                 return (int)$attachment_id;
             }
             
-            // Try by post title (filename without extension)
+            // 2. Try by post title (filename without extension)
             $file_name_no_ext = pathinfo($filename, PATHINFO_FILENAME);
             
             $attachment_id = $wpdb->get_var(
@@ -918,81 +661,32 @@ public function move_attachment_to_folder($attachment_id, $folder_id) {
             );
             
             if ($attachment_id) {
+                $this->debug("Found by post_title: $attachment_id");
                 return (int)$attachment_id;
             }
             
-            // Try by post name (sanitized version of title)
+            // 3. Try by guid (permalink)
             $attachment_id = $wpdb->get_var(
                 $wpdb->prepare(
                     "SELECT ID FROM {$wpdb->posts} 
                     WHERE post_type = 'attachment' 
-                    AND post_name = %s",
-                    sanitize_title($file_name_no_ext)
+                    AND guid LIKE %s",
+                    '%/' . $wpdb->esc_like($filename)
                 )
             );
             
             if ($attachment_id) {
+                $this->debug("Found by guid: $attachment_id");
                 return (int)$attachment_id;
             }
             
-            // Try by filename directly in meta
-            $attachment_id = $wpdb->get_var(
-                $wpdb->prepare(
-                    "SELECT post_id FROM {$wpdb->postmeta} 
-                    WHERE meta_key = '_wp_attached_file' 
-                    AND meta_value LIKE %s",
-                    '%' . $wpdb->esc_like($filename)
-                )
-            );
-            
-            return $attachment_id ? (int)$attachment_id : false;
+            $this->debug("No attachment found with filename: $filename");
+            return false;
             
         } catch (\Exception $e) {
             $this->logger->log('Error in get_attachment_by_filename: ' . $e->getMessage(), 'error');
             return false;
         }
-    }
-
-    /**
-     * Check if FileBird is active and working.
-     *
-     * @since    1.0.0
-     * @return   bool    Whether FileBird is active.
-     */
-    private function is_filebird_active() {
-        // Check for FileBird tables (most reliable)
-        $filebird_tables = $this->check_fbv_table_exists() || $this->check_fbv_attachment_table_exists();
-        
-        if ($filebird_tables) {
-            return true;
-        }
-        
-        // Check for FileBird taxonomy name
-        $filebird_taxonomy = !empty($this->get_filebird_taxonomy_name());
-        
-        if ($filebird_taxonomy) {
-            return true;
-        }
-        
-        // Check for FileBird class
-        $filebird_class_exists = class_exists('\\FileBird\\Plugin') || 
-                              class_exists('\\FileBird\\FileBird') || 
-                              class_exists('FileBird');
-        
-        // Check for FileBird constants
-        $filebird_constants = defined('NJFB_VERSION') || defined('FILEBIRD_VERSION');
-        
-        $is_active = $filebird_class_exists || $filebird_constants;
-        
-        if ($this->debug_mode && !$is_active) {
-            $this->debug('FileBird not detected: ' . 
-                        'Class exists: ' . ($filebird_class_exists ? 'Yes' : 'No') . ', ' .
-                        'Constants: ' . ($filebird_constants ? 'Yes' : 'No') . ', ' .
-                        'Tables: ' . ($filebird_tables ? 'Yes' : 'No') . ', ' .
-                        'Taxonomy: ' . ($filebird_taxonomy ? 'Yes' : 'No'));
-        }
-        
-        return $is_active;
     }
 
     /**
@@ -1026,36 +720,48 @@ public function move_attachment_to_folder($attachment_id, $folder_id) {
     }
 
     /**
-     * Detect the FileBird taxonomy name
+     * Dump the FileBird database tables to help diagnose issues.
+     * This is a debugging method, use with caution.
      *
      * @since    1.0.0
-     * @return   string|false    The taxonomy name or false if not found
+     * @return   array    The database tables content.
      */
-    private function get_filebird_taxonomy_name() {
-        global $wpdb;
-        
-        // Check for common FileBird taxonomy names
-        $possible_taxonomies = [
-            'filebird_folder',
-            'nt_wmc_folder',
-            'media_folder',
-            'folder',
-            'fbv'
-        ];
-        
-        foreach ($possible_taxonomies as $taxonomy) {
-            $exists = $wpdb->get_var(
-                $wpdb->prepare(
-                    "SELECT COUNT(*) FROM {$wpdb->term_taxonomy} WHERE taxonomy = %s LIMIT 1",
-                    $taxonomy
-                )
-            );
-            
-            if ((int)$exists > 0) {
-                return $taxonomy;
-            }
+    public function dump_filebird_tables() {
+        if (!$this->debug_mode) {
+            return array('error' => 'Debug mode not enabled');
         }
         
-        return false;
+        try {
+            global $wpdb;
+            $result = array();
+            
+            // Check and dump the fbv table
+            if ($this->check_fbv_table_exists()) {
+                $fbv_table = $wpdb->prefix . 'fbv';
+                $result['fbv'] = $wpdb->get_results("SELECT * FROM {$fbv_table} ORDER BY id", ARRAY_A);
+                $result['fbv_count'] = count($result['fbv']);
+            } else {
+                $result['fbv'] = 'Table does not exist';
+            }
+            
+            // Check and dump the fbv_attachment_folder table
+            if ($this->check_fbv_attachment_table_exists()) {
+                $fbv_attachment_table = $wpdb->prefix . 'fbv_attachment_folder';
+                $result['fbv_attachment_folder'] = $wpdb->get_results(
+                    "SELECT * FROM {$fbv_attachment_table} LIMIT 100", 
+                    ARRAY_A
+                );
+                $result['fbv_attachment_folder_count'] = $wpdb->get_var(
+                    "SELECT COUNT(*) FROM {$fbv_attachment_table}"
+                );
+            } else {
+                $result['fbv_attachment_folder'] = 'Table does not exist';
+            }
+            
+            return $result;
+            
+        } catch (\Exception $e) {
+            return array('error' => $e->getMessage());
+        }
     }
 }
